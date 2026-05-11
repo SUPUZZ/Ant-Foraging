@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>蚁群智能 - 强化归巢路径 | 真实信息素导航</title>
+    <style>
+        * { user-select: none; box-sizing: border-box; }
+        body {
+            background: #2c3e2f;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Segoe UI', 'Roboto', system-ui, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            background: #1a2a1a;
+            border-radius: 32px;
+            padding: 16px;
+            box-shadow: 0 20px 35px rgba(0,0,0,0.4);
+        }
+        canvas {
+            display: block;
+            margin: 0 auto;
+            border-radius: 20px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+            background-color: #dde8b9;
+            cursor: crosshair;
+        }
+        .info-panel {
+            margin-top: 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #2d3e2ad9;
+            backdrop-filter: blur(4px);
+            padding: 8px 24px;
+            border-radius: 60px;
+            color: #fef3d6;
+            font-weight: bold;
+            gap: 20px;
+            flex-wrap: nowrap;
+            border: 1px solid #5f7a4e;
+            min-height: 52px;
+        }
+        .stats {
+            display: flex;
+            flex-wrap: nowrap;
+            align-items: center;
+            gap: 14px;
+            font-size: 0.85rem;
+            background: #1e2a1c;
+            padding: 6px 20px;
+            border-radius: 40px;
+            flex: 0 1 auto;
+            min-width: 0;
+        }
+        .stat-item {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .stat-lbl {
+            font-size: 0.85rem;
+            font-weight: bold;
+        }
+        .stat-val {
+            color: #ffdf9c;
+            font-size: 1.2rem;
+            font-weight: 800;
+            font-variant-numeric: tabular-nums;
+            font-feature-settings: "tnum" 1;
+            display: inline-block;
+            min-width: 6ch;
+            text-align: right;
+            letter-spacing: 0;
+        }
+        button {
+            background: #e67e22;
+            border: none;
+            color: white;
+            font-weight: bold;
+            padding: 6px 24px;
+            border-radius: 40px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: 0.2s;
+            flex-shrink: 0;
+        }
+        button:hover { background: #f39c12; transform: scale(1.02); }
+        .legend {
+            display: flex;
+            flex-wrap: nowrap;
+            align-items: center;
+            gap: 14px;
+            font-size: 0.72rem;
+            background: #1e2a1cbb;
+            padding: 6px 18px;
+            border-radius: 40px;
+            flex-shrink: 0;
+        }
+        .legend div { display: flex; align-items: center; gap: 7px; white-space: nowrap; flex-shrink: 0; }
+        .color-box { width: 14px; height: 14px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+<div>
+    <div class="container">
+        <canvas id="antCanvas" width="1150" height="720"></canvas>
+        <div class="info-panel">
+            <div class="stats">
+                <div class="stat-item"><span class="stat-lbl">🐜 总群</span><span class="stat-val" id="totalAnts">0</span></div>
+                <div class="stat-item"><span class="stat-lbl">🏠 巢内</span><span class="stat-val" id="restingAnts">0</span></div>
+                <div class="stat-item"><span class="stat-lbl">🌿 外出</span><span class="stat-val" id="foragingAnts">0</span></div>
+                <div class="stat-item"><span class="stat-lbl">🍖 搬运</span><span class="stat-val" id="foodCarried">0</span></div>
+                <div class="stat-item"><span class="stat-lbl">🍎 食物</span><span class="stat-val" id="foodRemaining">0</span></div>
+                <div class="stat-item"><span class="stat-lbl">🍽️ 食源</span><span class="stat-val" id="foodSourcesCount">0</span></div>
+            </div>
+            <div class="legend">
+                <div><div class="color-box" style="background:#2c3e50;"></div> 工蚁</div>
+                <div><div class="color-box" style="background:#cd5c5c;"></div> 负食蚁</div>
+                <div><div class="color-box" style="background:#e67e22;"></div> 食物</div>
+                <div><div class="color-box" style="background:#5d3a1a;"></div> 蚁巢</div>
+                <div><div class="color-box" style="background:#79c75388;"></div> 信息素</div>
+            </div>
+            <button type="button" id="resetBtn">🔄 重置</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    'use strict';
+
+    // ---------- 画布与巢穴 ----------
+    const canvas = document.getElementById('antCanvas');
+    const ctx = canvas.getContext('2d', { alpha: true });
+    const W = canvas.width;
+    const H = canvas.height;
+    const NEST = { x: 170, y: H - 140 };
+
+    // ---------- 可调参数（集中一处便于对比实验）----------
+    const CFG = {
+        CELL_SIZE: 14,
+        EVAPORATION_RATE: 0.995,
+        BASE_PHEROMONE: 9.0,
+        MAX_PHEROMONE: 60,
+        TOTAL_ANTS: 850,
+        MAX_CONCURRENT_FORAGERS: 880,
+        /** 重置瞬间只允许少数先出巢，其余按帧陆续涌出 */
+        INITIAL_SPAWN_OUTSIDE: 5,
+        /** 每帧从巢内最多唤醒几只（控制“一下子涌几百只”） */
+        NEST_EMERGE_PER_FRAME: 3,
+        /** 允许同时在外的工蚁上限：初始值 + 每帧递增，封顶 MAX_CONCURRENT_FORAGERS */
+        OUTSIDE_CAP_START: 12,
+        OUTSIDE_CAP_RISE_PER_FRAME: 0.35,
+        /** 场上食物越多，可同时外出的工蚁越多（叠在时间爬坡上） */
+        FOOD_FORAGER_PER_UNIT: 0.12,
+        FOOD_FORAGER_BONUS_CAP: 200,
+        FORAGER_BONUS_PER_FOOD_SOURCE: 20,
+        /** 可同时外出的工蚁绝对上限（与膨胀后的种群匹配） */
+        FORAGER_ABS_MAX: 1180,
+        /** 食物越充裕，巢穴可养育的理论蚁口越大（调高后更容易看出增长） */
+        COLONY_MAX: 2200,
+        /** 场上剩余食物折算成额外蚁口：每 ~4 单位食物 +1（原 0.08 几乎看不出） */
+        COLONY_PER_FOOD_UNIT: 0.26,
+        /** 每个食源额外席位（新开食源 ⇒ 群落可再扩大） */
+        COLONY_PER_FOOD_SOURCE: 55,
+        /** 累计搬回巢的食物份数 ⇒ 群落扩大（单调增长，不随野外库存下降而回吐） */
+        COLONY_PER_CARRY_UNIT: 0.11,
+        BASE_SPEED: 1.5,
+        TURN_STRENGTH_SEARCH: 0.58,
+        TURN_STRENGTH_RETURN: 0.72,
+        /** 返巢时每帧把朝向拉向巢心的强度（0~1），解决「只靠信息素难回家」 */
+        HOME_STEER_STRENGTH: 0.20,
+        /** 距巢较近时加大归巢，避免在洞口打转 */
+        HOME_STEER_BOOST_NEAR: 1.65,
+        HOME_STEER_NEAR_DIST: 200,
+        RETURN_SPEED_MULT: 1.12,
+        ANTENNA_ANGLE: 0.92,
+        ANTENNA_LEN: 18,
+        RANDOM_WALK_SEARCH: 0.11,
+        RANDOM_WALK_RETURN: 0.04,
+        FOOD_RADIUS: 14,
+        /** 进入此距离即视为到巢（略大于视觉椭圆，便于结算） */
+        NEST_RADIUS: 26,
+        REST_FRAMES_MIN: 140,
+        REST_FRAMES_MAX: 380,
+        TRAIL_MAX: 12,
+        PHER_DRAW_THRESHOLD: 0.4,
+        MIN_PHEROMONE: 0.08,
+    };
+
+    const CELL_SIZE = CFG.CELL_SIZE;
+    const GRID_W = Math.ceil(W / CELL_SIZE) + 2;
+    const GRID_H = Math.ceil(H / CELL_SIZE) + 2;
+
+    /** 扁平信息素网格（按 gx, gy 线性存，利于单次遍历挥发与缓存） */
+    const pherLen = GRID_W * GRID_H;
+    const pher = new Float32Array(pherLen);
+
+    function pIndex(gx, gy) {
+        return gy * GRID_W + gx;
+    }
+
+    function getGridXY(x, y) {
+        let gx = (x / CELL_SIZE) | 0;
+        let gy = (y / CELL_SIZE) | 0;
+        if (gx < 0) gx = 0; else if (gx >= GRID_W) gx = GRID_W - 1;
+        if (gy < 0) gy = 0; else if (gy >= GRID_H) gy = GRID_H - 1;
+        return { gx, gy };
+    }
+
+    function addPheromone(x, y, intensity) {
+        if (intensity <= 0) return;
+        const { gx, gy } = getGridXY(x, y);
+        const i = pIndex(gx, gy);
+        const nv = pher[i] + intensity;
+        pher[i] = nv < CFG.MAX_PHEROMONE ? nv : CFG.MAX_PHEROMONE;
+    }
+
+    function evaporatePheromones() {
+        const rate = CFG.EVAPORATION_RATE;
+        const floor = CFG.MIN_PHEROMONE;
+        for (let i = 0; i < pherLen; i++) {
+            const v = pher[i];
+            if (v <= 0) continue;
+            const nv = v * rate;
+            pher[i] = nv < floor ? 0 : nv;
+        }
+    }
+
+    /** 双线性采样（原逻辑不变） */
+    function getPheromoneAt(x, y) {
+        if (x < 2 || x >= W - 2 || y < 2 || y >= H - 2) return 0;
+        const gx = x / CELL_SIZE;
+        const gy = y / CELL_SIZE;
+        const ix = gx | 0;
+        const iy = gy | 0;
+        const fx = gx - ix;
+        const fy = gy - iy;
+        const ix1 = ix + 1 < GRID_W ? ix + 1 : GRID_W - 1;
+        const iy1 = iy + 1 < GRID_H ? iy + 1 : GRID_H - 1;
+        const ix0 = ix < GRID_W ? ix : GRID_W - 1;
+        const iy0 = iy < GRID_H ? iy : GRID_H - 1;
+        const v00 = pher[pIndex(ix0, iy0)];
+        const v10 = pher[pIndex(ix1, iy0)];
+        const v01 = pher[pIndex(ix0, iy1)];
+        const v11 = pher[pIndex(ix1, iy1)];
+        const v0 = v00 + (v10 - v00) * fx;
+        const v1 = v01 + (v11 - v01) * fx;
+        return v0 + (v1 - v0) * fy;
+    }
+
+    /** 双侧触角采样（信息素梯度） */
+    function antennaSense(x, y, angle, offset) {
+        const half = offset * 0.5;
+        const leftAngle = angle + half;
+        const rightAngle = angle - half;
+        const lx = x + Math.cos(leftAngle) * CFG.ANTENNA_LEN;
+        const ly = y + Math.sin(leftAngle) * CFG.ANTENNA_LEN;
+        const rx = x + Math.cos(rightAngle) * CFG.ANTENNA_LEN;
+        const ry = y + Math.sin(rightAngle) * CFG.ANTENNA_LEN;
+        return {
+            left: getPheromoneAt(lx, ly),
+            right: getPheromoneAt(rx, ry),
+        };
+    }
+
+    function searchEfficiency(framesSinceSearchStart) {
+        return Math.min(2.3, Math.max(0.75, 560 / (framesSinceSearchStart + 40)));
+    }
+
+    function clamp(v, lo, hi) {
+        return v < lo ? lo : v > hi ? hi : v;
+    }
+
+    function normalizeAngle(a) {
+        if (a > Math.PI * 2) a -= Math.PI * 2;
+        else if (a < 0) a += Math.PI * 2;
+        return a;
+    }
+
+    /** 最短有符号角差 thisAngle -> targetAngle，范围 (-π, π] */
+    function signedAngleDiff(from, to) {
+        let d = to - from;
+        if (d > Math.PI) d -= Math.PI * 2;
+        else if (d < -Math.PI) d += Math.PI * 2;
+        return d;
+    }
+
+    // ---------- DOM（每帧更新，避免反复 query）----------
+    const ui = {
+        totalAnts: document.getElementById('totalAnts'),
+        restingAnts: document.getElementById('restingAnts'),
+        foragingAnts: document.getElementById('foragingAnts'),
+        foodCarried: document.getElementById('foodCarried'),
+        foodRemaining: document.getElementById('foodRemaining'),
+        foodSourcesCount: document.getElementById('foodSourcesCount'),
+    };
+
+    // ---------- 世界状态 ----------
+    let foodSources = [];
+    let totalCarried = 0;
+    let ants = [];
+    let globalFrame = 0;
+
+    function spawnNewFood() {
+        const margin = 80;
+        const maxAttempts = 60;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            const x = margin + Math.random() * (W - 2 * margin);
+            const y = margin + Math.random() * (H - 2 * margin);
+            if (Math.hypot(x - NEST.x, y - NEST.y) < 120) continue;
+            let tooClose = false;
+            for (let fi = 0; fi < foodSources.length; fi++) {
+                const f = foodSources[fi];
+                if (Math.hypot(x - f.x, y - f.y) < 100) {
+                    tooClose = true;
+                    break;
+                }
+            }
+            if (tooClose) continue;
+            const amount = 150 + (Math.random() * 200) | 0;
+            foodSources.push({ x, y, amount });
+            addPheromone(x, y, 8.5);
+            return;
+        }
+    }
+
+    function checkAndReplaceFood() {
+        for (let i = foodSources.length - 1; i >= 0; i--) {
+            if (foodSources[i].amount <= 0) {
+                foodSources.splice(i, 1);
+                spawnNewFood();
+            }
+        }
+        if (foodSources.length === 0) spawnNewFood();
+        if (foodSources.length === 1 && Math.random() < 0.006) spawnNewFood();
+    }
+
+    function tryCollectFood(ant, x, y) {
+        if (!ant.carrying && ant.state === 'search') {
+            for (let i = 0; i < foodSources.length; i++) {
+                const fs = foodSources[i];
+                if (fs.amount <= 0) continue;
+                if (Math.hypot(x - fs.x, y - fs.y) < CFG.FOOD_RADIUS) {
+                    ant.carrying = true;
+                    ant.state = 'return';
+                    fs.amount--;
+                    const searchTime = globalFrame - ant.searchStartFrame;
+                    const eff = Math.min(2.2, Math.max(0.75, 550 / (searchTime + 40)));
+                    addPheromone(fs.x, fs.y, CFG.BASE_PHEROMONE * 1.7 * eff);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 场上剩余食物总量（多源相加） */
+    function getTotalFoodAmount() {
+        let s = 0;
+        for (let i = 0; i < foodSources.length; i++) {
+            s += foodSources[i].amount;
+        }
+        return s;
+    }
+
+    /** 当前帧允许同时在外的觅食/返巢蚁：时间爬坡 + 食物越多名额越大 */
+    function getOutsideCap() {
+        const timeRamp = Math.min(
+            CFG.MAX_CONCURRENT_FORAGERS,
+            CFG.OUTSIDE_CAP_START + globalFrame * CFG.OUTSIDE_CAP_RISE_PER_FRAME
+        );
+        const food = getTotalFoodAmount();
+        const srcN = foodSources.length;
+        const foodBonus = Math.min(
+            CFG.FOOD_FORAGER_BONUS_CAP,
+            ((food * CFG.FOOD_FORAGER_PER_UNIT) | 0) +
+                srcN * CFG.FORAGER_BONUS_PER_FOOD_SOURCE
+        );
+        const cap = Math.min(
+            ants.length,
+            CFG.FORAGER_ABS_MAX,
+            timeRamp + foodBonus
+        );
+        return cap | 0;
+    }
+
+    /** 虫口分批涌出：每帧最多 N 只，且受动态外出上限约束 */
+    function manageForagers() {
+        const needOut = getOutsideCap();
+        let activeOut = 0;
+        const resters = [];
+        for (let i = 0; i < ants.length; i++) {
+            const a = ants[i];
+            if (a.state === 'resting') resters.push(a);
+            else activeOut++;
+        }
+        if (activeOut >= needOut) return;
+        let need = needOut - activeOut;
+        const emerge = Math.min(need, CFG.NEST_EMERGE_PER_FRAME, resters.length);
+        for (let i = 0; i < emerge; i++) {
+            resters[i].wakeUp();
+        }
+    }
+
+    /** 食物 + 已累计运回(success) → 巢穴当前「目标种群」上限；运回会持续推高，避免只剩粮时反而不长 */
+    function getColonyTargetSize() {
+        const food = getTotalFoodAmount();
+        const srcN = foodSources.length;
+        const fromFood = ((food * CFG.COLONY_PER_FOOD_UNIT) | 0) + srcN * CFG.COLONY_PER_FOOD_SOURCE;
+        const fromCarry = (totalCarried * CFG.COLONY_PER_CARRY_UNIT) | 0;
+        return Math.min(
+            CFG.COLONY_MAX,
+            CFG.TOTAL_ANTS + fromFood + fromCarry
+        );
+    }
+
+    /** 本帧一次性把蚁口补到目标（总群计数会明显高于初始 TOTAL_ANTS） */
+    function maybeExpandColony() {
+        const target = getColonyTargetSize();
+        while (ants.length < target && ants.length < CFG.COLONY_MAX) {
+            const ant = new Ant(
+                ants.length,
+                NEST.x + (Math.random() - 0.5) * 40,
+                NEST.y + (Math.random() - 0.5) * 40
+            );
+            ant.state = 'resting';
+            ant.restTimer =
+                (CFG.REST_FRAMES_MIN +
+                    Math.random() * (CFG.REST_FRAMES_MAX - CFG.REST_FRAMES_MIN)) |
+                0;
+            ants.push(ant);
+        }
+    }
+
+    // ---------- 蚂蚁 ----------
+    class Ant {
+        constructor(id, x, y) {
+            this.id = id;
+            this.x = x;
+            this.y = y;
+            this.angle = Math.random() * Math.PI * 2;
+            this.state = 'resting';
+            this.carrying = false;
+            this.speed = CFG.BASE_SPEED * (0.7 + Math.random() * 0.7);
+            this.trail = [];
+            this.searchStartFrame = globalFrame;
+            this.restTimer = (CFG.REST_FRAMES_MIN + Math.random() * (CFG.REST_FRAMES_MAX - CFG.REST_FRAMES_MIN)) | 0;
+        }
+
+        wakeUp() {
+            if (this.state !== 'resting') return;
+            this.state = 'search';
+            this.restTimer = 0;
+            this.carrying = false;
+            this.x = clamp(NEST.x + (Math.random() - 0.5) * 22, 6, W - 6);
+            this.y = clamp(NEST.y + (Math.random() - 0.5) * 22, 6, H - 6);
+            this.angle = Math.random() * Math.PI * 2;
+            this.trail.length = 0;
+            this.searchStartFrame = globalFrame;
+        }
+
+        goRest() {
+            this.state = 'resting';
+            this.carrying = false;
+            this.restTimer = (CFG.REST_FRAMES_MIN + Math.random() * (CFG.REST_FRAMES_MAX - CFG.REST_FRAMES_MIN)) | 0;
+            this.x = clamp(NEST.x + (Math.random() - 0.5) * 36, 6, W - 6);
+            this.y = clamp(NEST.y + (Math.random() - 0.5) * 36, 6, H - 6);
+        }
+
+        update() {
+            if (this.state === 'resting') {
+                if (this.restTimer > 0) this.restTimer--;
+                return;
+            }
+
+            const sense = antennaSense(this.x, this.y, this.angle, CFG.ANTENNA_ANGLE);
+            const diff = sense.left - sense.right;
+            let turn;
+            let step = this.speed;
+
+            if (this.state === 'search') {
+                turn = diff * CFG.TURN_STRENGTH_SEARCH + (Math.random() - 0.5) * CFG.RANDOM_WALK_SEARCH;
+                turn = clamp(turn, -0.55, 0.55);
+            } else {
+                const toNest = Math.atan2(NEST.y - this.y, NEST.x - this.x);
+                const nestErr = signedAngleDiff(this.angle, toNest);
+                const distNest = Math.hypot(this.x - NEST.x, this.y - NEST.y);
+                const nearBoost =
+                    distNest < CFG.HOME_STEER_NEAR_DIST ? CFG.HOME_STEER_BOOST_NEAR : 1;
+                const trailTurn =
+                    diff * CFG.TURN_STRENGTH_RETURN +
+                    (Math.random() - 0.5) * CFG.RANDOM_WALK_RETURN;
+                turn = trailTurn + nestErr * CFG.HOME_STEER_STRENGTH * nearBoost;
+                turn = clamp(turn, -0.68, 0.68);
+                step *= CFG.RETURN_SPEED_MULT;
+            }
+            this.angle = normalizeAngle(this.angle + turn);
+
+            let newX = this.x + Math.cos(this.angle) * step;
+            let newY = this.y + Math.sin(this.angle) * step;
+
+            if (newX <= 3) { newX = 3; this.angle = Math.PI - this.angle; }
+            else if (newX >= W - 3) { newX = W - 3; this.angle = Math.PI - this.angle; }
+            if (newY <= 3) { newY = 3; this.angle = -this.angle; }
+            else if (newY >= H - 3) { newY = H - 3; this.angle = -this.angle; }
+
+            this.x = newX;
+            this.y = newY;
+
+            const tr = this.trail;
+            tr.push({ x: this.x, y: this.y });
+            if (tr.length > CFG.TRAIL_MAX) tr.shift();
+
+            if (this.state === 'search') {
+                tryCollectFood(this, this.x, this.y);
+            } else {
+                let release = CFG.BASE_PHEROMONE;
+                if (this.carrying) {
+                    release *= searchEfficiency(globalFrame - this.searchStartFrame);
+                }
+                addPheromone(this.x, this.y, release);
+
+                if (Math.hypot(this.x - NEST.x, this.y - NEST.y) < CFG.NEST_RADIUS) {
+                    if (this.carrying) {
+                        totalCarried++;
+                        ui.foodCarried.textContent = String(totalCarried);
+                        this.carrying = false;
+                    }
+                    this.goRest();
+                    addPheromone(NEST.x, NEST.y, CFG.BASE_PHEROMONE * 1.2);
+                }
+            }
+        }
+
+        draw(c) {
+            if (this.state === 'resting') {
+                c.beginPath();
+                c.arc(this.x, this.y, 2.1, 0, Math.PI * 2);
+                c.fillStyle = 'rgba(110, 105, 85, 0.65)';
+                c.fill();
+                return;
+            }
+
+            const tr = this.trail;
+            if (tr.length > 1) {
+                c.lineWidth = 1.2;
+                for (let i = 0; i < tr.length - 1; i++) {
+                    const a0 = 0.12 + (i / tr.length) * 0.2;
+                    c.strokeStyle = `rgba(70, 60, 45, ${a0})`;
+                    c.beginPath();
+                    c.moveTo(tr[i].x, tr[i].y);
+                    c.lineTo(tr[i + 1].x, tr[i + 1].y);
+                    c.stroke();
+                }
+            }
+
+            c.beginPath();
+            c.arc(this.x, this.y, 2.4, 0, Math.PI * 2);
+            if (this.carrying) {
+                c.fillStyle = '#cd5c5c';
+                c.shadowBlur = 2.5;
+                c.shadowColor = '#ffaa66';
+            } else {
+                c.fillStyle = '#2c3e50';
+                c.shadowBlur = 1;
+            }
+            c.fill();
+            c.shadowBlur = 0;
+
+            const eyeX = this.x + Math.cos(this.angle) * 1.85;
+            const eyeY = this.y + Math.sin(this.angle) * 1.85;
+            c.beginPath();
+            c.arc(eyeX, eyeY, 0.65, 0, Math.PI * 2);
+            c.fillStyle = '#fef0d8';
+            c.fill();
+            c.fillStyle = '#1e2a1a';
+            c.beginPath();
+            c.arc(eyeX - 0.35, eyeY - 0.28, 0.35, 0, Math.PI * 2);
+            c.fill();
+
+            const la = this.angle + 0.72;
+            const ra = this.angle - 0.72;
+            const antLen = 5;
+            c.beginPath();
+            c.moveTo(this.x, this.y);
+            c.lineTo(this.x + Math.cos(la) * antLen, this.y + Math.sin(la) * antLen);
+            c.moveTo(this.x, this.y);
+            c.lineTo(this.x + Math.cos(ra) * antLen, this.y + Math.sin(ra) * antLen);
+            c.strokeStyle = '#8b8e6b';
+            c.lineWidth = 0.65;
+            c.stroke();
+        }
+    }
+
+    // ---------- 绘制 ----------
+    function drawPheromoneField() {
+        const thr = CFG.PHER_DRAW_THRESHOLD;
+        const invMax = 1 / CFG.MAX_PHEROMONE;
+        for (let j = 0; j < GRID_H; j++) {
+            const row = j * GRID_W;
+            for (let i = 0; i < GRID_W; i++) {
+                const val = pher[row + i];
+                if (val <= thr) continue;
+                const intensity = Math.min(val * invMax, 0.88);
+                const radius = 3.5 + intensity * 7;
+                const cx = i * CELL_SIZE + CELL_SIZE * 0.5;
+                const cy = j * CELL_SIZE + CELL_SIZE * 0.5;
+                ctx.beginPath();
+                ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(90, 210, 70, ${0.2 + intensity * 0.65})`;
+                ctx.fill();
+            }
+        }
+    }
+
+    function drawEnvironment() {
+        ctx.fillStyle = '#dde8b9';
+        ctx.fillRect(0, 0, W, H);
+
+        drawPheromoneField();
+
+        for (let fi = 0; fi < foodSources.length; fi++) {
+            const fs = foodSources[fi];
+            ctx.shadowBlur = 6;
+            ctx.shadowColor = '#a56b3a';
+            ctx.beginPath();
+            ctx.arc(fs.x, fs.y, 14, 0, Math.PI * 2);
+            ctx.fillStyle = '#e67e22';
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(fs.x - 3, fs.y - 3, 3.5, 0, Math.PI * 2);
+            ctx.fillStyle = '#f1c40f';
+            ctx.fill();
+            ctx.fillStyle = '#b45f2a';
+            ctx.font = "bold 15px 'Segoe UI'";
+            ctx.fillText(String(fs.amount), fs.x - 9, fs.y + 6);
+            ctx.fillStyle = '#ffcf8a';
+            ctx.font = '18px sans-serif';
+            ctx.fillText('🍖', fs.x - 8, fs.y - 8);
+        }
+
+        ctx.shadowBlur = 4;
+        ctx.beginPath();
+        ctx.ellipse(NEST.x, NEST.y, 24, 18, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#9b6a3c';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(NEST.x - 6, NEST.y - 5, 9, 7, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#b5824a';
+        ctx.fill();
+        ctx.fillStyle = '#412e1a';
+        ctx.font = "24px 'Segoe UI'";
+        ctx.fillText('🏠', NEST.x - 15, NEST.y - 11);
+        ctx.shadowBlur = 0;
+
+        let totalFood = 0;
+        let resting = 0;
+        for (let i = 0; i < foodSources.length; i++) totalFood += foodSources[i].amount;
+        for (let i = 0; i < ants.length; i++) {
+            if (ants[i].state === 'resting') resting++;
+        }
+        ui.foodRemaining.textContent = String(totalFood);
+        ui.foodSourcesCount.textContent = String(foodSources.length);
+        ui.totalAnts.textContent = String(ants.length);
+        ui.restingAnts.textContent = String(resting);
+        ui.foragingAnts.textContent = String(ants.length - resting);
+    }
+
+    function drawAnts() {
+        for (let i = 0; i < ants.length; i++) ants[i].draw(ctx);
+    }
+
+    function resetSimulation() {
+        globalFrame = 0;
+        totalCarried = 0;
+        ui.foodCarried.textContent = '0';
+
+        pher.fill(0);
+
+        foodSources.length = 0;
+        spawnNewFood();
+        spawnNewFood();
+
+        ants.length = 0;
+        const n = CFG.TOTAL_ANTS;
+        for (let i = 0; i < n; i++) {
+            const ant = new Ant(
+                i,
+                NEST.x + (Math.random() - 0.5) * 40,
+                NEST.y + (Math.random() - 0.5) * 40
+            );
+            ant.state = 'resting';
+            ant.restTimer = (CFG.REST_FRAMES_MIN + Math.random() * (CFG.REST_FRAMES_MAX - CFG.REST_FRAMES_MIN)) | 0;
+            ants.push(ant);
+        }
+
+        addPheromone(NEST.x, NEST.y, 10);
+        for (let fi = 0; fi < foodSources.length; fi++) {
+            addPheromone(foodSources[fi].x, foodSources[fi].y, 8);
+        }
+
+        const seed = Math.min(CFG.INITIAL_SPAWN_OUTSIDE, ants.length);
+        for (let i = 0; i < seed; i++) {
+            ants[i].wakeUp();
+        }
+    }
+
+    function updateSimulation() {
+        evaporatePheromones();
+        for (let i = 0; i < ants.length; i++) ants[i].update();
+        checkAndReplaceFood();
+        maybeExpandColony();
+        manageForagers();
+        globalFrame++;
+    }
+
+    function render() {
+        drawEnvironment();
+        drawAnts();
+    }
+
+    function tick() {
+        updateSimulation();
+        render();
+        requestAnimationFrame(tick);
+    }
+
+    function init() {
+        resetSimulation();
+        requestAnimationFrame(tick);
+        document.getElementById('resetBtn').addEventListener('click', resetSimulation);
+    }
+
+    init();
+})();
+</script>
+</body>
+</html>
