@@ -22,6 +22,23 @@ Open **`ant-foraging.html`** in a modern desktop or mobile browser (no build ste
 
 If you cloned this repo locally, double-click the file or serve the folder with any static file server—the simulation is entirely client-side.
 
+## Live demo (GitHub Pages)
+
+GitHub does not execute the Canvas app when you browse the Markdown or raw-file view—you need **static hosting**. After enabling Pages once, the simulation runs online at:
+
+**https://supuzz.github.io/Ant-Foraging/**
+
+(This repo ships **`index.html`**, which jumps straight to **`ant-foraging.html`**.)
+
+### Enable GitHub Pages (one-time)
+
+1. Open **Settings → Pages** on GitHub for this repository.
+2. Under **Build and deployment**, set **Source** to **Deploy from a branch**.
+3. Choose branch **`main`**, folder **`/ (root)`**, then Save.
+4. Wait about one minute; the site URL appears at the top of the Pages settings.
+
+(Releases/ZIP archives are convenient for pinning a snapshot but do not solve “preview on GitHub” by themselves—you still host the HTML or open it locally.)
+
 ## Repository
 
 Upstream: **https://github.com/SUPUZZ/Ant-Foraging**
