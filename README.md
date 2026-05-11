@@ -2,6 +2,16 @@
 
 A browser-based **2D ant-foraging simulation** built with HTML5 Canvas and plain JavaScript. Ants leave the nest, search for food, pick it up, and carry it home while depositing **pheromones** on the return leg. Other ants can then bias their movement using those cues, so **short-lived trails** and **collective path use** emerge from simple local rules—without any central planner.
 
+## Preview
+
+Screenshot 1 — nest, food patches, and pheromone trails:
+
+![Ant colony foraging simulation — overhead view with nest, food, and pheromone trails](assets/ant-colony-simulation-01.png)
+
+Screenshot 2 — another run with dense trails and the stats bar:
+
+![Ant colony simulation — alternate run with dense trails and statistics bar](assets/ant-colony-simulation-02.png)
+
 ## What this project is
 
 - **Toy model of stigmergy**: ants coordinate indirectly by modifying a shared scalar field (pheromone density on a grid) and reading it back while they move.
