@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings><Nullable>enable</Nullable>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>AntField</AssemblyName><Version>1.0.4</Version>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../AntField.Core/AntField.Core.csproj" /></ItemGroup>
+  <ItemGroup><Resource Include="Assets/ant-atlas.png" /></ItemGroup>
+</Project>

@@ -1,0 +1,6 @@
+namespace AntField.Core;
+
+public sealed record WorkerSnapshot(int Id, double X, double Y, double Heading, double Distance, double Energy, bool HasFood, bool InNest, double Timer);
+public sealed record FoodSnapshot(int Id, double X, double Y, int Amount);
+public sealed record BroodSnapshot(BroodStage Stage, double Age);
+public sealed record ColonySnapshot(int Version, double Width, double Height, double Time, int Delivered, int Stored, int Consumed, int Spawned, int Expired, int Births, double ClimbProbability, double SpawnInterval, WorkerSnapshot[] Workers, FoodSnapshot[] Foods, BroodSnapshot[] Nursery, Wall[]? Screens = null, Vec? Home = null);
