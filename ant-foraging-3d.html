@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#17211d">
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+  <title>蚁境 · 3D 蚂蚁觅食观察室</title>
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <main>
+    <header><a class="brand" href="ant-foraging-3d.html"><span class="brand-mark">✳</span> 蚁境 <small>ANT FIELD</small></a><span class="header-note">微小个体，协同世界。</span><a class="classic" href="ant-foraging.html">经典 2D ↗</a></header>
+    <section class="workspace">
+      <aside>
+        <div class="eyebrow">LIVE COLONY / 活体仿真</div><h1>一条路，<br>从一次探索开始。</h1><p class="intro">走近地表，观察蚂蚁如何用触角感知、留下信息素，将一粒食物带回巢穴。</p>
+        <div class="stats"><div><b id="delivered">0</b><span>已运回食物</span></div><div><b id="carrying">0</b><span>正在搬运</span></div><div><b id="food">0</b><span>剩余食物</span></div></div>
+        <div class="section-title">观察与控制 <span id="status">运行中</span></div>
+        <div class="button-row"><button id="pause">暂停</button><button id="reset">重新开始</button></div>
+        <label>蚁群规模 <output id="count-value">64</output><input id="count" type="range" min="12" max="120" value="64" step="4"></label>
+        <label>时间流速 <output id="speed-value">1×</output><input id="speed" type="range" min="0.5" max="4" value="1" step="0.5"></label>
+        <label>信息素挥发 <output id="decay-value">6%</output><input id="decay" type="range" min="1" max="20" value="6" step="1"></label>
+        <label class="toggle"><span>显示信息素路径</span><input id="trails" type="checkbox" checked></label>
+        <div class="section-title">视角</div><div class="view-buttons"><button id="overview" class="active">全景</button><button id="follow">跟随蚂蚁</button><button id="model">模型特写</button></div>
+        <button id="place-food" class="primary">＋ 放置食物</button><button id="export-model" hidden>导出蚂蚁模型 .glb</button><p class="hint" id="hint">拖动旋转 · 滚轮缩放 · 点击蚂蚁选择<br>触屏：单指旋转，双指缩放</p>
+        <div class="legend"><span><i class="nest-dot"></i>巢穴</span><span><i class="food-dot"></i>食物</span><span><i class="trail-dot"></i>信息素</span></div>
+      </aside>
+      <div class="viewport" id="viewport"><div class="scene-label"><span class="live-dot"></span> 林地微观生态 <small>3D OBSERVATORY</small></div><div id="loading">正在构建蚁群世界…</div><div class="selected" id="selected">工蚁 #01 <span>探索中</span></div><div class="scene-footer"><span>探索 → 发现 → 搬运 → 归巢</span><span id="elapsed">00:00</span></div></div>
+    </section>
+    <footer>六足交替步态 / 双触角探测 / 局部信息素导航 <span>自然启发的行为模型</span></footer>
+  </main>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

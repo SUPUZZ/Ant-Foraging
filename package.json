@@ -1,0 +1,18 @@
+{
+  "name": "ant-foraging-3d",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "test": "node --test tests/simulation.test.js",
+    "test:browser": "node tests/browser.test.js"
+  },
+  "dependencies": {
+    "three": "0.180.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "vite": "6.4.4"
+  }
+}
