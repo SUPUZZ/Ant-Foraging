@@ -6,7 +6,7 @@
 
 ## 直接运行
 
-已构建版本位于 `artifacts/windows-x64/AntField.exe`。它是 Windows x64 便携程序，无需安装或管理员权限；完整发布版包含 .NET 运行时。
+本地已构建版本位于 `artifacts/windows-x64/AntField.exe`。也可打开 [GitHub Actions 编译记录](https://github.com/SUPUZZ/Ant-Foraging/actions/workflows/build.yml)，进入成功的运行记录，在 **Artifacts** 下载 `AntField-windows-x64`，解压后运行 `AntField.exe`。它是 Windows x64 便携程序，无需安装或管理员权限；完整发布版包含 .NET 运行时。
 
 启动后，蚂蚁和食物直接出现在**所有显示器的桌面工作区域**。蚁窝位于主屏底部中央、任务栏上方。点击蚁窝或系统托盘图标，可查看巢内剖面。蚁窝之外的桌面覆盖层穿透鼠标，不接管键盘焦点。
 
