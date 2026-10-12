@@ -134,7 +134,7 @@ public sealed class DesktopColony
                 ant.Elevation = 0; ant.ClimbWall = null;
             }
             else if (ant.State == AntState.UnderWindow) ant.State = ant.HasFood || ant.Energy < 24 ? AntState.Returning : AntState.Searching;
-            ant.EscapeTarget = null; ant.ReturnTarget = null; ant.Decision = 0;
+            ant.EscapeTarget = null; ant.ReturnTarget = null; ant.DetourTarget = null; ant.ProgressOrigin = null; ant.Decision = 0;
         }
     }
     public bool SpawnFood()
@@ -191,6 +191,20 @@ public sealed class DesktopColony
         ant.ReturnTarget = best;
         return best;
     }
+    void UpdateProgress(Worker ant)
+    {
+        if (ant.DetourTarget is Vec target && (Time >= ant.DetourUntil || !CanWalk(target) || !Navigation.Clear(ant.Position, target))) ant.DetourTarget = null;
+        if (ant.ProgressOrigin is not Vec origin) { ant.ProgressOrigin = ant.Position; ant.ProgressTime = Time; return; }
+        if (Time - ant.ProgressTime < 2) return;
+        bool nearWall = Walls.Any(w => w.Contains(ant.Position, 30)) || ant.Position.X < 25 || ant.Position.X > Width - 25 || ant.Position.Y < 25 || ant.Position.Y > Height - 25;
+        if (nearWall && (ant.Position - origin).Length < 18 && ant.DetourTarget == null && Time >= ant.DetourUntil)
+        {
+            ant.DetourTarget = Navigation.Detour(ant.Position, ant.Heading, ant.Id);
+            if (ant.DetourTarget != null) { ant.DetourUntil = Time + 3; ant.ReturnTarget = null; ant.Turn = 0; }
+        }
+        ant.ProgressOrigin = ant.Position; ant.ProgressTime = Time;
+    }
+
     static double Angle(double a) => Math.Atan2(Math.Sin(a), Math.Cos(a));
     void Tick(double dt)
     {
@@ -203,6 +217,7 @@ public sealed class DesktopColony
             ant.ClimbCooldown -= dt;
             if (ant.State == AntState.InNest)
             {
+                ant.ProgressOrigin = null; ant.DetourTarget = null;
                 ant.Position = Home; ant.Timer -= dt; ant.Energy = Math.Min(100, ant.Energy + dt * 18);
                 if (ant.Timer <= 0 && ant.Energy > 60) { ant.State = AntState.Searching; ant.Heading = -Math.PI * random.NextDouble(); }
                 continue;
@@ -216,7 +231,8 @@ public sealed class DesktopColony
             ant.Energy -= dt * .3;
             if (ant.Energy < 24) ant.State = AntState.Returning;
             ant.Decision -= dt;
-            if (ant.State == AntState.Searching && ant.Decision <= 0 && Time >= ant.AvoidUntil)
+            UpdateProgress(ant);
+            if (ant.State == AntState.Searching && ant.DetourTarget == null && ant.Decision <= 0 && Time >= ant.AvoidUntil)
             {
                 ant.Decision = .22;
                 var near = Foods.Where(f => f.Amount > 0 && (f.Position - ant.Position).Length < 95 && Navigation.Clear(ant.Position, f.Position)).OrderBy(f => (f.Position - ant.Position).Length).FirstOrDefault();
@@ -227,10 +243,13 @@ public sealed class DesktopColony
                 }
                 else
                 {
-                    double best = 0, turn = (random.NextDouble() - .5) * 3.6;
+                    // Uniform scent carries no directional information. Only a
+                    // stronger, visible sample should override normal exploration.
+                    double best = Scent(ant.Position) + .05, turn = (random.NextDouble() - .5) * 3.6;
                     foreach (double offset in new[] { -.65, 0, .65 })
                     {
-                        double signal = Scent(ant.Position + Vec.Direction(ant.Heading + offset) * 24);
+                        var sample = ant.Position + Vec.Direction(ant.Heading + offset) * 24;
+                        double signal = Navigation.Clear(ant.Position, sample) ? Scent(sample) : 0;
                         if (signal > best && random.NextDouble() > .12) { best = signal; turn = offset * 4; }
                     }
                     ant.Turn = turn;
@@ -244,7 +263,7 @@ public sealed class DesktopColony
                     if (ant.Energy < 50 && Stored > 0) { Stored--; Consumed++; }
                     ant.State = AntState.InNest; ant.ReturnTarget = null; ant.Timer = 2 + random.NextDouble() * 3; continue;
                 }
-                var target = ReturnDirection(ant);
+                var target = ant.DetourTarget ?? ReturnDirection(ant);
                 ant.Heading = (target - ant.Position).Angle; ant.Turn = 0;
                 if (ant.HasFood)
                 {
@@ -252,12 +271,15 @@ public sealed class DesktopColony
                     if (i >= 0) Pheromones[i] = Math.Min(24, Pheromones[i] + (float)(8 * dt));
                 }
             }
+            if (ant.DetourTarget is Vec detour) { ant.Heading = (detour - ant.Position).Angle; ant.Turn = 0; }
             ant.Heading = Angle(ant.Heading + Math.Clamp(ant.Turn, -5, 5) * dt);
             double distance = (ant.HasFood ? 36 : 48) * dt;
+            if (ant.DetourTarget is Vec waypoint) distance = Math.Min(distance, (waypoint - ant.Position).Length);
             var next = ant.Position + Vec.Direction(ant.Heading) * distance;
             if (CanWalk(next) && Navigation.Clear(ant.Position, next)) { ant.Position = next; ant.Distance += distance; }
             else
             {
+                ant.DetourTarget = null;
                 ant.ReturnTarget = null;
                 bool turned = false;
                 // Try small turns first, so walls produce perimeter following rather than random penetration.
@@ -271,6 +293,11 @@ public sealed class DesktopColony
                     turned = true; break;
                 }
                 if (!turned) ant.Heading = Angle(ant.Heading + Math.PI * .6);
+            }
+            if (ant.DetourTarget is Vec reached && (reached - ant.Position).Length < 2)
+            {
+                ant.DetourTarget = null; ant.ProgressOrigin = ant.Position; ant.ProgressTime = Time;
+                ant.AvoidUntil = Time + 1; ant.Decision = 1; ant.Turn = 0;
             }
         }
         Foods.RemoveAll(f => f.Amount <= 0);

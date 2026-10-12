@@ -24,6 +24,7 @@ internal sealed class ColonyWindow : Window
     {
         this.colony = colony; this.isPaused = isPaused; this.togglePause = togglePause;
         Title = "桌面蚁境 · 蚁窝内部"; Width = 920; Height = 800; MinWidth = 700; MinHeight = 540;
+        Icon = System.Windows.Media.Imaging.BitmapFrame.Create(App.IconUri);
         WindowStartupLocation = WindowStartupLocation.CenterScreen; Background = AntPainter.ColorBrush("#16211c"); Foreground = AntPainter.ColorBrush("#dce5cf"); FontFamily = new FontFamily("Microsoft YaHei UI");
         var stack = new StackPanel { Margin = new Thickness(25, 20, 25, 18) };
         var header = new DockPanel(); var exit = Button("退出蚁境", () => { exiting = true; Application.Current.Shutdown(); }); DockPanel.SetDock(exit, Dock.Right); header.Children.Add(exit);
@@ -46,7 +47,7 @@ internal sealed class ColonyWindow : Window
         var checks = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };
         var trails = new CheckBox { Content = "显示信息素", Foreground = Foreground, Margin = new Thickness(0, 0, 24, 0) }; trails.Checked += (_, _) => TrailsChanged?.Invoke(true); trails.Unchecked += (_, _) => TrailsChanged?.Invoke(false); checks.Children.Add(trails);
         var walls = new CheckBox { Content = "显示窗口墙边界", Foreground = Foreground }; walls.Checked += (_, _) => WallsChanged?.Invoke(true); walls.Unchecked += (_, _) => WallsChanged?.Invoke(false); checks.Children.Add(walls); stack.Children.Add(checks);
-        stack.Children.Add(new TextBlock { Text = "点击剖面中的房间查看详情。关闭此窗口仅收起；托盘菜单可暂停或退出。", FontSize = 11, Foreground = AntPainter.ColorBrush("#8fa08c"), Margin = new Thickness(0, 16, 0, 0), TextWrapping = TextWrapping.Wrap });
+        stack.Children.Add(new TextBlock { Text = "拖动调整切面视角 · 滚轮缩放 · 点击巢室查看详情。关闭此窗口仅收起。", FontSize = 11, Foreground = AntPainter.ColorBrush("#8fa08c"), Margin = new Thickness(0, 16, 0, 0), TextWrapping = TextWrapping.Wrap });
         Content = new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         Closing += (_, e) => { if (!exiting && !App.IsExiting) { e.Cancel = true; Hide(); } };
         KeyDown += (_, e) => { if (e.Key == Key.Escape) Hide(); };
@@ -77,6 +78,6 @@ internal sealed class ColonyWindow : Window
     {
         stats.Text = $"工蚁  {colony.Workers.Count}       搬运  {colony.Carrying}       已运回  {colony.Delivered}       储粮  {colony.Stored}       育幼  {colony.Nursery.Count}       窗下  {colony.Workers.Count(a => a.State == AntState.UnderWindow)}";
         status.Text = $"{(isPaused() ? "已暂停" : "运行中")} · 识别到 {colony.Walls.Count} 个窗口墙 · {colony.Foods.Count} 处食物 · 工蚁在底层沿窗口墙绕行" + (colony.FoodSpaceAvailable ? "" : " · 暂无可达桌面空地，等待窗口布局改变");
-        pause.Content = isPaused() ? "继续" : "暂停"; RefreshDetail(); nestView.InvalidateVisual();
+        pause.Content = isPaused() ? "继续" : "暂停"; RefreshDetail(); nestView.RefreshScene();
     }
 }

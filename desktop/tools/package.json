@@ -1,0 +1,11 @@
+{
+  "name": "ant-field-desktop-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate:icon": "node generate-app-icon.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}

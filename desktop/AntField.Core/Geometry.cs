@@ -52,6 +52,10 @@ public sealed class Worker
     public double Elevation { get; set; }
     public Vec? EscapeTarget { get; set; }
     public Vec? ReturnTarget { get; set; }
+    public Vec? ProgressOrigin { get; set; }
+    public double ProgressTime { get; set; }
+    public Vec? DetourTarget { get; set; }
+    public double DetourUntil { get; set; }
 }
 public sealed class FoodPatch
 {

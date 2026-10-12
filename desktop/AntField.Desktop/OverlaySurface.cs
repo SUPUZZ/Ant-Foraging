@@ -8,7 +8,7 @@ namespace AntField.Desktop;
 internal sealed class OverlaySurface : FrameworkElement
 {
     readonly DesktopColony colony;
-    static readonly Brush Crumb = AntPainter.ColorBrush("#d1dc97"), Nest = AntPainter.ColorBrush("#786347"), Entrance = AntPainter.ColorBrush("#201d14"), Badge = AntPainter.ColorBrush("#e4e9c9");
+    static readonly Brush Crumb = AntPainter.ColorBrush("#d1dc97");
     static readonly Pen WallPen = AntPainter.Frozen(new Pen(AntPainter.ColorBrush("#709ec29c"), 1.5) { DashStyle = DashStyles.Dash });
     public bool ShowTrails { get; set; }
     public bool ShowWalls { get; set; }
@@ -17,6 +17,8 @@ internal sealed class OverlaySurface : FrameworkElement
     protected override void OnRender(DrawingContext dc)
     {
         base.OnRender(dc);
+        // Soil and entrance shadows sit on the ground, underneath passing ants.
+        NestPainter.Draw(dc, new Point(colony.Home.X, colony.Home.Y));
         if (ShowWalls) foreach (var wall in colony.Walls) dc.DrawRectangle(null, WallPen, new Rect(wall.X, wall.Y, wall.Width, wall.Height));
         if (ShowTrails) for (int i = 0; i < colony.Pheromones.Length; i++)
         {
@@ -48,10 +50,5 @@ internal sealed class OverlaySurface : FrameworkElement
             AntPainter.Draw(dc, new Point(ant.Position.X, ant.Position.Y), ant.Heading, .85, ant.Distance, colony.Time + ant.Id, ant.HasFood, true, 0);
         }
         dc.Pop();
-        var home = colony.Home;
-        dc.DrawEllipse(AntPainter.ColorBrush("#48000000"), null, new Point(home.X, home.Y + 6), 46, 15);
-        dc.DrawEllipse(Nest, new Pen(AntPainter.ColorBrush("#b7a275"), 1), new Point(home.X, home.Y + 2), 40, 16);
-        dc.DrawEllipse(Entrance, null, new Point(home.X, home.Y - 1), 17, 7);
-        AntPainter.Text(dc, "蚁窝 · 点击查看", new Point(home.X - 42, home.Y + 8), 10, Badge, VisualTreeHelper.GetDpi(this).PixelsPerDip);
     }
 }

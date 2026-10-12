@@ -1,14 +1,12 @@
 # 桌面蚁境 · Windows 桌面版
 
-此分支从 `codex/realistic-3d-ant-foraging` 创建，新增独立的 Windows 原生桌面程序，保留已有浏览器 3D 版本。
+这是 Windows 原生桌面版目录，包含程序源码、行为检查、资源、图标工具和发布脚本。网页版位于同级的 `web/`，见 [网页版说明](../web/README.md)；两个版本的入口见 [仓库总览](../README.md)。以下路径与命令均相对于 `desktop/` 目录。
 
 ![桌面觅食示意，非用户桌面截图](screenshots/desktop-demo.png)
 
 ## 直接运行
 
-已构建版本位于 `desktop/artifacts/windows-x64/AntField.exe`。它是 Windows x64 便携程序，无需安装或管理员权限；完整发布版包含 .NET 运行时。
-
-窗口遮挡规则修正版为 `desktop/artifacts/windows-x64-occlusion/AntField.exe`。使用前从托盘退出正在运行的旧版，再打开修正版；修正版会读取同一个蚁群存档。
+已构建版本位于 `artifacts/windows-x64/AntField.exe`。它是 Windows x64 便携程序，无需安装或管理员权限；完整发布版包含 .NET 运行时。
 
 启动后，蚂蚁和食物直接出现在**所有显示器的桌面工作区域**。蚁窝位于主屏底部中央、任务栏上方。点击蚁窝或系统托盘图标，可查看巢内剖面。蚁窝之外的桌面覆盖层穿透鼠标，不接管键盘焦点。
 
@@ -21,9 +19,32 @@
 
 剖面房间可以点击查看详情。关闭剖面窗口只会收起；通过托盘菜单或“退出蚁境”按钮退出。托盘还支持暂停和隐藏桌面蚁群。首次运行从 48 只工蚁开始，育幼可使群体增加，最多 120 只。
 
-最新信息素归巢版：`desktop/artifacts/windows-x64-pheromone/AntField.exe`。退出托盘旧版后启动。
+最新包的内部窗口提供 3D 切面。内部窗口使用原生 WPF 3D 土层切面，露出凹入的巢室与连通通道，展示立体蚁后、六足工蚁、卵/幼虫/蛹和储粮。拖动调整角度，滚轮缩放，点击巢室或下方房间按钮查看详情；“复位视角”恢复全景。桌面巢口仍不显示文字。
+
+切面的育幼阶段、储粮及巢内工蚁取自实时仿真，蚁后与巢内巡行位置是展示模型。工蚁最多显示 18 只、储粮最多显示 70 粒，完整数量仍在窗口统计中显示。暂停时巢内动画同步停止，窗口收起时停止渲染更新。
+
+![程序实际渲染的 3D 蚁窝切面](screenshots/nest-cutaway.png)
+
+`--smoke-test` 同时检查 3D 巢室在不同角度、不同窗口宽度下的射线点击、房间按钮与视角复位，以及离巢工蚁/育幼个体的更新；结果写入 `smoke-results/nest-cutaway-check.json`，测试切面图写入 `nest-cutaway-check.png`。
+
+图标源文件为 `AntField.Desktop/Assets/ant-icon.svg`；修改后安装图标工具的独立依赖并运行，生成 PNG 预览及包含 16–256 像素多种尺寸的 ICO，再重新构建桌面版：
+
+```powershell
+cd tools
+npm ci
+npm run generate:icon
+cd ..
+```
+
+此工具需要 Node.js 和 Edge（Windows）或 Playwright Chromium；没有 Edge 时，在 `tools/` 执行 `npx playwright install chromium`。仅在重新生成图标时需要这些工具，正常运行与构建使用已有 ICO。
+
+最新包的桌面巢口采用多洞设计。桌面土堆上有三个大小不一的洞口，土层与洞口阴影在蚂蚁下方，蚂蚁经过时不会被土堆盖住；点击土堆仍可打开 3D 内部切面。
 
 ## 桌面与窗口规则
+
+窗口拐角使用实际边界检查与邻近导航点衔接，避免把能走的边缘误判成封闭网格。探索时不采样隔着窗口的气味，气味浓度相同不会固定转向；贴墙两秒仍未走出小范围的工蚁会沿可通行路线绕开，保持正常步速与携带的食物。
+
+内部切面的主通道与支路采用连续曲线，宽度与凹入深度沿路径变化。四个巢室错层分布，大小、倾角和凹凸轮廓各不相同；选中轮廓、点击判断及内部个体位置使用同一套巢室几何。原生检查会验证每个巢室均连通地表入口。
 
 程序只读取可见顶层窗口的边界和显示状态，不读取窗口文本或截图。最小化窗口、其他虚拟桌面上被隐藏的窗口、桌面背景和任务栏不会变成墙。
 
@@ -46,21 +67,19 @@
 需要 Windows 10/11 和 .NET 8 SDK。
 
 ```powershell
-dotnet run --project desktop/AntField.Desktop
-dotnet run --project desktop/AntField.Core.Tests -c Release
-./desktop/build.ps1
+dotnet run --project AntField.Desktop
+dotnet run --project AntField.Core.Tests -c Release
+./build.ps1
 ```
 
 `build.ps1` 先执行行为测试，再生成自包含单文件程序；加 `-FrameworkDependent` 可生成较小的程序，但运行机器需安装 .NET 8 Desktop Runtime。
 
-运行旧版本时，可用 `./desktop/build.ps1 -OutputDirectory artifacts/windows-x64-occlusion` 构建到其他目录，避免替换正在使用的程序。
-
 ```powershell
-./desktop/artifacts/windows-x64/AntField.exe --smoke-test
+./artifacts/windows-x64/AntField.exe --smoke-test
 ```
 
 原生检查模式运行 3 秒，检查透明窗口、屏幕/DPI、真实窗口检测、食物有效位置，以及单个/重叠窗口、旧爬墙状态的像素遮挡和窗口移动、移走后的显露，输出 `smoke-results/native-check.json` 与 `nest-interior.png`，不读写正常存档。`--ui-test` 将该模式延长至 60 秒，方便验证交互。
 
 结构：`AntField.Core` 是无需窗口的行为与导航系统，`AntField.Core.Tests` 是独立行为检查，`AntField.Desktop` 负责 Win32 窗口边界、透明层、托盘、剖面和存档。
 
-桌面动画素材已经内嵌，无需联网或浏览器。修改 `src/ant-model.js` 后，先启动 `npm run dev`，再运行 `node desktop/tools/generate-ant-atlas.js` 重新生成素材，然后重新构建桌面程序。
+桌面动画素材 `AntField.Desktop/Assets/ant-atlas.png` 已经内嵌，正常运行与构建不依赖网页项目、Node.js、联网或浏览器。若要更新复用的 3D 模型素材，修改 `../web/src/ant-model.js` 后，在 `../web/` 启动 `npm run dev`，再在另一个终端的 `web/` 目录执行 `npm run generate:desktop-atlas`，生成素材后重新构建桌面程序。详见 [网页版素材工具说明](../web/README.md#桌面动画素材生成可选)。

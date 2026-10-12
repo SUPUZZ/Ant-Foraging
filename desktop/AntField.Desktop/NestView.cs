@@ -1,78 +1,194 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Media3D;
 using AntField.Core;
 
 namespace AntField.Desktop;
 
-internal sealed class NestView : FrameworkElement
+internal sealed class NestView : Grid
 {
     readonly DesktopColony colony;
-    readonly Point[] centers = [new(180, 205), new(215, 380), new(650, 215), new(620, 380)];
-    readonly string[] names = ["蚁后室", "育幼室", "粮仓", "工蚁休息区"];
+    readonly Viewport3D viewport = new();
+    readonly PerspectiveCamera camera = new() { FieldOfView = 43, NearPlaneDistance = .1, FarPlaneDistance = 400 };
+    readonly Model3DGroup inhabitants = new(), supplies = new(), brood = new();
+    readonly Dictionary<int, (Model3DGroup Model, Worker Worker, int Chamber)> workers = new();
+    readonly Button[] roomButtons = new Button[4];
+    readonly GeometryModel3D terrain;
+    readonly Model3DGroup queen;
+    readonly Model3DGroup selection = new();
+    Point pressed, previous;
+    bool dragging, rendering;
+    double yaw = 22, pitch = 20, distance = 28, renderedTime = -1;
+    string broodStages = "";
+    int stored = -1;
     public int Selected { get; private set; } = 1;
     public event Action<int>? ChamberSelected;
+    internal (int Workers, int Food, int Brood) VisibleCounts => (workers.Count, supplies.Children.Count, brood.Children.Count);
+
     public NestView(DesktopColony colony)
     {
-        this.colony = colony; Height = 380; Cursor = Cursors.Hand;
-        MouseLeftButtonDown += (_, e) => {
-            var p = e.GetPosition(this); double s = Math.Min(ActualWidth / 850, ActualHeight / 460), offset = (ActualWidth - 850 * s) / 2;
-            int index = Enumerable.Range(0, 4).OrderBy(i => (centers[i] - new Point((p.X - offset) / s, p.Y / s)).Length).First();
-            Selected = index; ChamberSelected?.Invoke(index); InvalidateVisual();
+        this.colony = colony;
+        Height = 420; ClipToBounds = true;
+        Background = new LinearGradientBrush(System.Windows.Media.Color.FromRgb(17, 26, 23), System.Windows.Media.Color.FromRgb(39, 50, 42), 90);
+        viewport.Camera = camera; viewport.Margin = new Thickness(10, 8, 10, 52); Children.Add(viewport);
+        viewport.SizeChanged += (_, _) => UpdateCamera();
+        var scene = new Model3DGroup();
+        scene.Children.Add(new AmbientLight(System.Windows.Media.Color.FromRgb(105, 105, 100)));
+        scene.Children.Add(new DirectionalLight(System.Windows.Media.Color.FromRgb(255, 238, 209), new Vector3D(-.4, -.7, -1)));
+        scene.Children.Add(new DirectionalLight(System.Windows.Media.Color.FromRgb(111, 135, 127), new Vector3D(.8, .1, -.6)));
+        terrain = NestGeometry3D.CreateTerrain(); scene.Children.Add(terrain);
+        scene.Children.Add(NestGeometry3D.CreateSoilBlock());
+        scene.Children.Add(NestGeometry3D.CreateSurface());
+        scene.Children.Add(selection);
+        scene.Children.Add(supplies); scene.Children.Add(brood); scene.Children.Add(inhabitants);
+        queen = new Model3DGroup(); queen.Children.Add(NestGeometry3D.Queen);
+        inhabitants.Children.Add(queen);
+        viewport.Children.Add(new ModelVisual3D { Content = scene });
+
+        var rooms = new UniformGrid { Rows = 1, Columns = 4, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(12, 0, 12, 10) };
+        for (int i = 0; i < 4; i++)
+        {
+            int index = i;
+            var button = new Button { Content = NestGeometry3D.Names[i], Padding = new Thickness(10, 7, 10, 7), Margin = new Thickness(3),
+                Foreground = AntPainter.ColorBrush("#e1e5ce"), BorderThickness = new Thickness(1), Cursor = Cursors.Hand };
+            button.Click += (_, _) => SelectChamber(index);
+            System.Windows.Automation.AutomationProperties.SetName(button, $"查看{NestGeometry3D.Names[i]}");
+            roomButtons[i] = button; rooms.Children.Add(button);
+        }
+        Children.Add(rooms);
+        var reset = new Button { Content = "复位视角", HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(12), Padding = new Thickness(10, 5, 10, 5), Background = AntPainter.ColorBrush("#293b30"), Foreground = AntPainter.ColorBrush("#ccd8be"), BorderBrush = AntPainter.ColorBrush("#53654c") };
+        reset.Click += (_, _) => { yaw = 22; pitch = 20; distance = 28; UpdateCamera(); };
+        Children.Add(reset);
+        viewport.MouseLeftButtonDown += (_, e) => { pressed = previous = e.GetPosition(viewport); dragging = false; viewport.CaptureMouse(); e.Handled = true; };
+        viewport.MouseMove += (_, e) => {
+            if (!viewport.IsMouseCaptured) return;
+            var point = e.GetPosition(viewport);
+            if ((point - pressed).Length > 4) dragging = true;
+            if (dragging) { yaw = Math.Clamp(yaw + (point.X - previous.X) * .15, -25, 25); pitch = Math.Clamp(pitch + (point.Y - previous.Y) * .12, -5, 25); UpdateCamera(); }
+            previous = point;
         };
+        viewport.MouseLeftButtonUp += (_, e) => { if (!viewport.IsMouseCaptured) return; viewport.ReleaseMouseCapture(); if (!dragging) SelectAt(e.GetPosition(viewport)); e.Handled = true; };
+        viewport.MouseWheel += (_, e) => { distance = Math.Clamp(distance - e.Delta / 120.0 * 1.2, 20, 36); UpdateCamera(); e.Handled = true; };
+        Loaded += (_, _) => UpdateRendering();
+        Unloaded += (_, _) => StopRendering();
+        IsVisibleChanged += (_, _) => UpdateRendering();
+        UpdateCamera(); UpdateSelection(); RefreshScene();
     }
-    protected override void OnRender(DrawingContext dc)
+
+    void UpdateCamera()
     {
-        if (ActualWidth <= 0) return;
-        double scale = Math.Min(ActualWidth / 850, ActualHeight / 460);
-        dc.PushTransform(new TranslateTransform((ActualWidth - 850 * scale) / 2, 0));
-        dc.PushTransform(new ScaleTransform(scale, scale));
-        var earth = new LinearGradientBrush(AntPainter.ColorBrush("#67553a").ColorValue(), AntPainter.ColorBrush("#302c22").ColorValue(), 90);
-        dc.DrawRoundedRectangle(earth, null, new Rect(0, 35, 850, 420), 16, 16);
-        var rng = new Random(42);
-        for (int i = 0; i < 320; i++) dc.DrawEllipse(AntPainter.ColorBrush("#28c1a77d"), null, new Point(rng.NextDouble() * 850, 46 + rng.NextDouble() * 400), 1 + rng.NextDouble(), 1);
-        dc.DrawLine(new Pen(AntPainter.ColorBrush("#a5b97d"), 3), new Point(10, 35), new Point(840, 35));
-        dc.DrawEllipse(AntPainter.ColorBrush("#837052"), null, new Point(425, 35), 40, 13);
-        dc.DrawEllipse(AntPainter.ColorBrush("#191f17"), null, new Point(425, 35), 18, 6);
-        AntPainter.Text(dc, "地表巢口", new Point(380, 4), 13, AntPainter.ColorBrush("#dce7c8"));
-        var tunnel = new Pen(AntPainter.ColorBrush("#1f2119"), 22) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
-        dc.DrawLine(tunnel, new Point(425, 42), new Point(425, 310));
-        for (int i = 0; i < centers.Length; i++)
-        {
-            var geometry = new StreamGeometry();
-            using (var g = geometry.Open()) { g.BeginFigure(new Point(425, i % 2 == 0 ? 130 : 285), false, false); g.BezierTo(new Point(i < 2 ? 320 : 540, i % 2 == 0 ? 150 : 340), new Point(centers[i].X, centers[i].Y - 45), centers[i], true, false); }
-            dc.DrawGeometry(null, tunnel, geometry);
-            dc.DrawEllipse(AntPainter.ColorBrush("#26291e"), new Pen(AntPainter.ColorBrush(i == Selected ? "#c9d9a0" : "#897855"), i == Selected ? 2 : 1), centers[i], i == 0 ? 101 : 115, i == 0 ? 57 : 58);
-            AntPainter.Text(dc, names[i], new Point(centers[i].X - 40, centers[i].Y - 42), 13, AntPainter.ColorBrush("#cbd8ab"));
-        }
-        // Queen and attendants stay inside the queen chamber.
-        AntPainter.Draw(dc, new Point(170, 212), .1, 2.5, 0, colony.Time, false, false);
-        for (int i = 0; i < 3; i++) AntPainter.Draw(dc, new Point(190 + Math.Sin(colony.Time * .3 + i * 2) * 58, 224 + Math.Cos(colony.Time * .3 + i * 2) * 13), colony.Time * .3 + i, .55, colony.Time * 3, colony.Time, false);
-        int item = 0;
-        foreach (var brood in colony.Nursery)
-        {
-            double x = 153 + item % 7 * 18, y = 375 + item / 7 * 15;
-            var brush = AntPainter.ColorBrush(brood.Stage == BroodStage.Egg ? "#e6e2c3" : brood.Stage == BroodStage.Larva ? "#c7c397" : "#a9a16c");
-            dc.DrawEllipse(brush, null, new Point(x, y), brood.Stage == BroodStage.Egg ? 3 : 5, brood.Stage == BroodStage.Larva ? 3 : 6); item++;
-        }
-        for (int i = 0; i < Math.Min(colony.Stored, 70); i++)
-            dc.DrawEllipse(AntPainter.ColorBrush("#bfd082"), null, new Point(585 + (i % 14) * 9, 206 + i / 14 * 9), 3.4, 2.8);
-        var inside = colony.Workers.Where(a => a.State == AntState.InNest).Take(18).ToArray();
-        for (int i = 0; i < inside.Length; i++) AntPainter.Draw(dc, new Point(544 + i % 6 * 29, 375 + i / 6 * 15), inside[i].Heading, .75, 0, colony.Time + i, false, false);
-        int traffic = 0;
-        foreach (var ant in colony.Workers.Where(a => a.State == AntState.Returning || a.State == AntState.InNest).Take(10))
-        {
-            double t = (colony.Time * 13 + ant.Id * 31) % 200;
-            AntPainter.Draw(dc, new Point(425 + (traffic % 2 == 0 ? -3 : 4), 80 + t), traffic % 2 == 0 ? Math.PI / 2 : -Math.PI / 2, .55, colony.Time * 12, colony.Time, ant.HasFood); traffic++;
-        }
-        AntPainter.Text(dc, $"卵 {colony.Nursery.Count(b => b.Stage == BroodStage.Egg)} · 幼虫 {colony.Nursery.Count(b => b.Stage == BroodStage.Larva)} · 蛹 {colony.Nursery.Count(b => b.Stage == BroodStage.Pupa)}", new Point(110, 425), 11, AntPainter.ColorBrush("#b2bb96"));
-        AntPainter.Text(dc, $"储粮 {colony.Stored} · 巢内工蚁 {colony.Workers.Count(a => a.State == AntState.InNest)}", new Point(530, 425), 11, AntPainter.ColorBrush("#b2bb96"));
-        dc.Pop(); dc.Pop();
+        double a = yaw * Math.PI / 180, b = pitch * Math.PI / 180;
+        double fitted = distance * Math.Max(1, viewport.ActualWidth / Math.Max(1, viewport.ActualHeight) / 2.3);
+        var position = new Point3D(fitted * Math.Sin(a) * Math.Cos(b), .5 + fitted * Math.Sin(b), fitted * Math.Cos(a) * Math.Cos(b));
+        camera.Position = position; camera.LookDirection = new Point3D(0, .1, -.7) - position; camera.UpDirection = new Vector3D(0, 1, 0);
     }
-}
-internal static class BrushExtensions
-{
-    internal static Color ColorValue(this Brush brush) => ((SolidColorBrush)brush).Color;
+
+    internal bool SelectAt(Point point)
+    {
+        bool selected = false;
+        // Pick the cut surface rather than selecting whichever room is nearest.
+        VisualTreeHelper.HitTest(viewport, null, result => {
+            if (result is RayMeshGeometry3DHitTestResult hit && ReferenceEquals(hit.ModelHit, terrain))
+            {
+                for (int i = 0; i < 4; i++) if (NestGeometry3D.InChamber(i, hit.PointHit.X, hit.PointHit.Y)) { SelectChamber(i); selected = true; break; }
+                return HitTestResultBehavior.Stop;
+            }
+            return HitTestResultBehavior.Continue;
+        }, new PointHitTestParameters(point));
+        return selected;
+    }
+
+    void SelectChamber(int index) { Selected = index; UpdateSelection(); ChamberSelected?.Invoke(index); }
+
+    void UpdateSelection()
+    {
+        selection.Children.Clear(); selection.Children.Add(NestGeometry3D.ChamberRim(Selected));
+        for (int i = 0; i < 4; i++)
+        {
+            roomButtons[i].Background = AntPainter.ColorBrush(i == Selected ? "#475339" : "#203127");
+            roomButtons[i].BorderBrush = AntPainter.ColorBrush(i == Selected ? "#b8ca8c" : "#435640");
+        }
+    }
+
+    public void RefreshScene()
+    {
+        int visibleFood = Math.Min(colony.Stored, 70);
+        if (stored != visibleFood)
+        {
+            stored = visibleFood; supplies.Children.Clear();
+            var random = new Random(320);
+            for (int i = 0; i < visibleFood; i++)
+            {
+                double angle = random.NextDouble() * Math.PI * 2, radius = Math.Sqrt(random.NextDouble());
+                var point = NestGeometry3D.ChamberPoint(2, Math.Cos(angle) * radius * .65, Math.Sin(angle) * radius * .6);
+                double x = point.X, y = point.Y;
+                supplies.Children.Add(NestGeometry3D.Pellet(x, y, NestGeometry3D.Depth(x, y) + .1, i));
+            }
+        }
+        string stages = string.Join(',', colony.Nursery.Select(b => (int)b.Stage));
+        if (stages != broodStages)
+        {
+            broodStages = stages; brood.Children.Clear();
+            for (int i = 0; i < colony.Nursery.Count; i++)
+            {
+                double angle = i * 2.4, radius = .12 + Math.Sqrt(i) * .1;
+                var point = NestGeometry3D.ChamberPoint(1, Math.Cos(angle) * radius, Math.Sin(angle) * radius * .75);
+                double x = point.X, y = point.Y;
+                brood.Children.Add(NestGeometry3D.Brood(colony.Nursery[i].Stage, x, y, NestGeometry3D.Depth(x, y) + .11));
+            }
+        }
+        var visible = colony.Workers.Where(a => a.State == AntState.InNest).Take(18).Select((ant, i) => (Ant: ant, Chamber: i < 2 ? 0 : i < 4 ? 1 : 3)).ToArray();
+        var ids = visible.Select(a => a.Ant.Id).ToHashSet();
+        foreach (int id in workers.Keys.Where(id => !ids.Contains(id)).ToArray()) { inhabitants.Children.Remove(workers[id].Model); workers.Remove(id); }
+        foreach (var entry in visible)
+        {
+            if (workers.TryGetValue(entry.Ant.Id, out var existing)) { workers[entry.Ant.Id] = (existing.Model, entry.Ant, entry.Chamber); continue; }
+            var model = new Model3DGroup(); model.Children.Add(NestGeometry3D.AntPoses[0]);
+            inhabitants.Children.Add(model); workers.Add(entry.Ant.Id, (model, entry.Ant, entry.Chamber));
+        }
+        Animate();
+    }
+
+    void Animate()
+    {
+        double time = colony.Time;
+        var queenPosition = NestGeometry3D.ChamberPoint(0, -.12, -.08);
+        queen.Transform = Placement(queenPosition.X, queenPosition.Y, 12, 1.15);
+        foreach (var entry in workers.Values)
+        {
+            double phase = time * .45 + entry.Worker.Id * 2.399;
+            double rx = .32 + entry.Worker.Id % 7 * .04, ry = .32 + entry.Worker.Id % 4 * .06;
+            var point = NestGeometry3D.ChamberPoint(entry.Chamber, Math.Sin(phase) * rx, Math.Cos(phase * .9) * ry);
+            double x = point.X, y = point.Y;
+            var tangent = NestGeometry3D.ChamberPoint(entry.Chamber, Math.Cos(phase) * rx, -.9 * Math.Sin(phase * .9) * ry) - NestGeometry3D.Centers[entry.Chamber];
+            double angle = Math.Atan2(tangent.Y, tangent.X) * 180 / Math.PI;
+            entry.Model.Children[0] = NestGeometry3D.AntPoses[(int)(time * 8 + entry.Worker.Id) % NestGeometry3D.AntPoses.Length];
+            entry.Model.Transform = Placement(x, y, angle, .48);
+        }
+        renderedTime = time;
+    }
+
+    static Transform3D Placement(double x, double y, double angle, double scale)
+    {
+        var transform = new Transform3DGroup();
+        transform.Children.Add(new ScaleTransform3D(scale, scale, scale));
+        transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 0, 1), angle)));
+        transform.Children.Add(new TranslateTransform3D(x, y, NestGeometry3D.Depth(x, y) + .08));
+        return transform;
+    }
+
+    void UpdateRendering()
+    {
+        if (IsLoaded && IsVisible && !rendering) { CompositionTarget.Rendering += RenderFrame; rendering = true; }
+        else if (!IsLoaded || !IsVisible) StopRendering();
+    }
+    void StopRendering() { if (rendering) { CompositionTarget.Rendering -= RenderFrame; rendering = false; } }
+    void RenderFrame(object? sender, EventArgs e) { if (Math.Abs(colony.Time - renderedTime) >= 1.0 / 35) Animate(); }
 }

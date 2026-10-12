@@ -207,4 +207,53 @@ Test("Carriers ignore scent behind walls and keep returning after a trail is blo
     }
     Check(!ant.HasFood && c.Delivered == 1, "Scent-following carrier failed to return");
 });
+Test("Free corner strips connect to routing samples even when their cell centers are blocked", () => {
+    var c = new DesktopColony(1000, 700, 1);
+    c.UpdateWalls([new Wall(1, 262.1, 142.3, 351.7, 295.3)]);
+    var start = new Vec(612.26, 448.67); var end = new Vec(595, 448.67);
+    Check(c.Navigation.HomeDistance[c.Navigation.Index(end)] < 0, "The test no longer exercises a blocked cell center");
+    Check(c.Free(end) && c.CanWalk(end), "A physically clear strip was treated as an impassable grid wall");
+    Check(c.Navigation.Clear(start, end), "The clear bottom strip was blocked");
+    Check(!c.CanWalk(new Vec(603, 441)), "Corner anchoring allowed entry into the real window margin");
+    var ant = c.Workers[0]; ant.Position = start; ant.State = AntState.Searching; ant.Heading = Math.PI; ant.Decision = 100; ant.Turn = 0;
+    c.Step(.4);
+    Check(ant.Position.X < 600 && c.CanWalk(ant.Position), "An ant could not walk across the clear strip");
+});
+Test("Dense colonies escape fractional window corners in uniform scent without teleporting", () => {
+    for (int layout = 0; layout < 8; layout++) foreach (bool carrying in new[] { false, true })
+    {
+        var wall = new Wall(1, 260 + layout * 2.1, 141 + layout * 1.3, 351.7, 295.3);
+        var c = new DesktopColony(1000, 700, 120, layout); c.UpdateWalls([wall]);
+        var corners = new List<Vec>();
+        foreach (int sx in new[] { -1, 1 }) foreach (int sy in new[] { -1, 1 })
+        foreach (double offset in new[] { 7.05, 7.5, 8, 9, 11, 14, 18, 22 })
+        {
+            var p = new Vec((sx < 0 ? wall.X : wall.X + wall.Width) + sx * offset, (sy < 0 ? wall.Y : wall.Y + wall.Height) + sy * offset);
+            if (c.CanWalk(p)) corners.Add(p);
+        }
+        foreach (var ant in c.Workers)
+        {
+            ant.Position = corners[ant.Id % corners.Count]; ant.State = carrying ? AntState.Returning : AntState.Searching;
+            ant.HasFood = carrying; ant.Heading = (new Vec(wall.X + wall.Width / 2, wall.Y + wall.Height / 2) - ant.Position).Angle;
+        }
+        var origins = c.Workers.Select(a => a.Position).ToArray();
+        var furthest = new double[120]; var delivered = new bool[120];
+        Array.Fill(c.Pheromones, 20);
+        for (int tick = 0; tick < (carrying ? 1200 : 240); tick++)
+        {
+            var previous = c.Workers.Select(a => a.Position).ToArray();
+            var speeds = c.Workers.Select(a => a.HasFood ? 36 : 48).ToArray();
+            c.Step(.05);
+            for (int i = 0; i < 120; i++)
+            {
+                var ant = c.Workers[i];
+                Check(ant.State == AntState.InNest || (ant.Position - previous[i]).Length <= speeds[i] * .05 + .000001, "A corner escape teleported or exceeded walking speed");
+                Check(c.CanWalk(ant.Position), "A corner escape penetrated a window");
+                furthest[i] = Math.Max(furthest[i], (ant.Position - origins[i]).Length);
+                if (!ant.HasFood) delivered[i] = true;
+            }
+        }
+        Check(carrying ? delivered.All(done => done) : furthest.All(distance => distance > 60), $"Corner loop survived in layout {layout}, carrying {carrying}");
+    }
+});
 Console.WriteLine($"{passed} desktop simulation checks passed.");

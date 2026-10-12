@@ -22,6 +22,8 @@ internal sealed class App : Application
     OverlaySurface surface = null!;
     ColonyWindow panel = null!;
     Forms.NotifyIcon tray = null!;
+    System.Drawing.Icon? trayIcon;
+    internal static Uri IconUri => new("pack://application:,,,/Assets/ant-icon.ico", UriKind.Absolute);
     DispatcherTimer timer = null!;
     IntPtr overlayHandle;
     NativeDesktop.NativeRect work;
@@ -74,6 +76,7 @@ internal sealed class App : Application
             });
         };
         surface.MouseLeftButtonDown += (_, args) => { if (surface.NestHitBox.Contains(args.GetPosition(surface))) OpenPanel(); };
+        overlay.Icon = BitmapFrame.Create(IconUri);
         overlay.Show();
         CreatePanel(); CreateTray();
         ScanWindows(); for (int i = 0; i < 5; i++) colony.SpawnFood();
@@ -98,7 +101,10 @@ internal sealed class App : Application
     }
     void CreateTray()
     {
-        tray = new Forms.NotifyIcon { Text = "桌面蚁境 · 点击查看蚁窝", Icon = System.Drawing.SystemIcons.Information, Visible = true };
+        using (var stream = GetResourceStream(IconUri).Stream)
+        using (var icon = new System.Drawing.Icon(stream, Forms.SystemInformation.SmallIconSize))
+            trayIcon = (System.Drawing.Icon)icon.Clone();
+        tray = new Forms.NotifyIcon { Text = "桌面蚁境 · 点击查看蚁窝", Icon = trayIcon, Visible = true };
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("查看蚁窝", null, (_, _) => Dispatcher.Invoke(OpenPanel));
         menu.Items.Add("暂停 / 继续", null, (_, _) => Dispatcher.Invoke(TogglePause));
@@ -178,7 +184,9 @@ internal sealed class App : Application
         bool outsideNest = !NativeDesktop.GetCursorPos(out var cursor) || !surface.NestHitBox.Contains(new Point((cursor.X - work.Left) / scale, (cursor.Y - work.Top) / scale));
         bool hitPolicyMatchesCursor = ((style & 0x20) != 0) == outsideNest;
         var checks = new { screens = colony.Screens.Count, desktopBoundsMatch = NativeDesktop.BoundsMatch(overlayHandle, work), drawingSizeMatches = Math.Abs(surface.ActualWidth - colony.Width) < 1 && Math.Abs(surface.ActualHeight - colony.Height) < 1, windows = colony.Walls.Count, time = colony.Time, width = colony.Width, height = colony.Height, dpi = scale, transparent = overlay.AllowsTransparency, borderless = overlay.WindowStyle == WindowStyle.None, noActivate = (style & 0x08000000) != 0, hitPolicyMatchesCursor, foodOnFloor = colony.Foods.All(f => colony.CanWalk(f.Position)), workers = colony.Workers.Count, windowOcclusion = RenderingChecks.WindowOcclusion() };
+        bool nestCutaway = RenderingChecks.NestCutaway(output);
         File.WriteAllText(Path.Combine(output, "native-check.json"), JsonSerializer.Serialize(checks));
+        File.WriteAllText(Path.Combine(output, "nest-cutaway-check.json"), JsonSerializer.Serialize(new { nestCutaway }));
         SaveDesktopDemo(output);
         if (!checks.desktopBoundsMatch || !checks.drawingSizeMatches || !checks.windowOcclusion || !checks.transparent || !checks.borderless || !checks.noActivate || !checks.hitPolicyMatchesCursor || !checks.foodOnFloor) throw new InvalidOperationException("原生桌面检查失败。");
     }
@@ -213,6 +221,7 @@ internal sealed class App : Application
     {
         IsExiting = true; timer?.Stop(); if (!smoke && colony != null) Save();
         if (tray != null) { tray.Visible = false; tray.Dispose(); }
+        trayIcon?.Dispose();
         singleInstance?.ReleaseMutex(); singleInstance?.Dispose(); base.OnExit(e);
     }
 }

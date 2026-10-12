@@ -22,7 +22,29 @@ public sealed class Navigation
         return x < 0 || y < 0 || x >= Columns || y >= Rows ? -1 : y * Columns + x;
     }
     public Vec Center(int index) => new((index % Columns + .5) * Cell, (index / Columns + .5) * Cell);
-    public bool Reachable(Vec p) { int i = Index(p); return i >= 0 && HomeDistance[i] >= 0; }
+    public bool Reachable(Vec p)
+    {
+        int i = Index(p);
+        return i >= 0 && (HomeDistance[i] >= 0 || Anchor(p) >= 0);
+    }
+    int Anchor(Vec p)
+    {
+        int current = Index(p);
+        if (current < 0) return -1;
+        if (HomeDistance[current] >= 0 && Clear(p, Center(current))) return current;
+        int px = current % Columns, py = current / Columns, best = -1; double distance = double.MaxValue;
+        // Cell centers are only routing samples. A free point beside a window
+        // corner can connect to an adjacent sample even if its own center is blocked.
+        for (int y = Math.Max(0, py - 2); y <= Math.Min(Rows - 1, py + 2); y++)
+        for (int x = Math.Max(0, px - 2); x <= Math.Min(Columns - 1, px + 2); x++)
+        {
+            int index = y * Columns + x;
+            if (HomeDistance[index] < 0) continue;
+            double d = (Center(index) - p).Length;
+            if (d < distance && Clear(p, Center(index))) { best = index; distance = d; }
+        }
+        return best;
+    }
     public void Rebuild(double width, double height, Vec home, Func<Vec, bool> free, Func<Vec, Vec, bool>? clear = null)
     {
         this.free = free; this.clear = clear;
@@ -49,7 +71,7 @@ public sealed class Navigation
     }
     public Vec HomeTarget(Vec p, Vec home)
     {
-        int i = Index(p);
+        int i = Anchor(p);
         if (Clear(p, home)) return home;
         if (i < 0 || HomeDistance[i] < 0) return Nearest(p, free) ?? p;
         int best = i;
@@ -57,6 +79,26 @@ public sealed class Navigation
             if (HomeDistance[next] >= 0 && HomeDistance[next] < HomeDistance[best] && Clear(p, Center(next))) best = next;
         return Center(best);
     }
+    public Vec? Detour(Vec p, double heading, int id)
+    {
+        Vec? best = null; double bestScore = double.MinValue;
+        int left = Math.Max(0, (int)((p.X - 95) / Cell)), right = Math.Min(Columns - 1, (int)((p.X + 95) / Cell));
+        int top = Math.Max(0, (int)((p.Y - 95) / Cell)), bottom = Math.Min(Rows - 1, (int)((p.Y + 95) / Cell));
+        for (int y = top; y <= bottom; y++) for (int x = left; x <= right; x++)
+        {
+            int index = y * Columns + x;
+            if (HomeDistance[index] < 0) continue;
+            var target = Center(index); var delta = target - p;
+            if (delta.Length < 55 || delta.Length > 95 || !Clear(p, target)) continue;
+            // Prefer open space; a small individual bias prevents the whole colony
+            // from choosing the same wall-following direction at a shared corner.
+            int exits = Neighbors(index).Count(next => Floor[next]);
+            double score = delta.Length + exits * 9 + Math.Cos(delta.Angle - heading + (id % 2 == 0 ? .7 : -.7)) * 12;
+            if (score > bestScore) { best = target; bestScore = score; }
+        }
+        return best;
+    }
+
     public Vec? Nearest(Vec p, Func<Vec, bool> free)
     {
         double bestDistance = double.MaxValue; Vec? best = null;

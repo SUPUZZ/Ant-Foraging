@@ -4,8 +4,10 @@
     <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>disable</ImplicitUsings><Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets/ant-icon.ico</ApplicationIcon>
     <AssemblyName>AntField</AssemblyName><Version>1.0.4</Version>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../AntField.Core/AntField.Core.csproj" /></ItemGroup>
   <ItemGroup><Resource Include="Assets/ant-atlas.png" /></ItemGroup>
+  <ItemGroup><Resource Include="Assets/ant-icon.ico" /></ItemGroup>
 </Project>

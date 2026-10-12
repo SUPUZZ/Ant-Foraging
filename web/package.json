@@ -6,7 +6,8 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "test": "node --test tests/simulation.test.js",
-    "test:browser": "node tests/browser.test.js"
+    "test:browser": "node tests/browser.test.js",
+    "generate:desktop-atlas": "node tools/generate-desktop-ant-atlas.js"
   },
   "dependencies": {
     "three": "0.180.0"
