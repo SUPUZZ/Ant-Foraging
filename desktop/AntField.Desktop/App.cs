@@ -1,9 +1,11 @@
 using System;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -28,15 +30,20 @@ internal sealed class App : Application
     IntPtr overlayHandle;
     NativeDesktop.NativeRect work;
     double scale = 1, speed = 1, scanClock, refreshClock, saveClock;
-    bool paused, smoke;
+    bool paused, smoke, frameTest;
     int smokeSeconds = 3;
     readonly Stopwatch clock = new();
+    readonly Stopwatch maintenanceClock = new();
+    TimeSpan lastRenderingTime = TimeSpan.MinValue;
+    Task pendingSave = Task.CompletedTask;
+    readonly List<double> frameIntervals = new();
     readonly string stateFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AntField");
     Mutex? singleInstance;
     [STAThread]
     public static void Main(string[] args)
     {
         var app = new App { ShutdownMode = ShutdownMode.OnExplicitShutdown, smoke = args.Contains("--smoke-test") };
+        if (args.Contains("--frame-test")) { app.smoke = true; app.frameTest = true; app.smokeSeconds = 8; }
         if (args.Contains("--ui-test")) { app.smoke = true; app.smokeSeconds = 60; }
         app.singleInstance = new Mutex(true, app.smoke ? "Local\\AntFieldSmokeTest" : "Local\\AntFieldDesktop", out bool created);
         if (!created) { System.Windows.MessageBox.Show("桌面蚁境已经在运行，请从系统托盘打开蚁窝。", "桌面蚁境"); app.singleInstance.Dispose(); return; }
@@ -50,7 +57,7 @@ internal sealed class App : Application
     {
         base.OnStartup(e); work = NativeDesktop.WorkArea();
         var initial = SystemParameters.WorkArea;
-        colony = new DesktopColony(initial.Width, initial.Height);
+        colony = new DesktopColony(initial.Width, initial.Height, frameTest ? 120 : 48);
         if (!smoke)
         {
             try { var saved = JsonSerializer.Deserialize<ColonySnapshot>(File.ReadAllText(Path.Combine(stateFolder, "colony.json"))); if (saved != null)
@@ -81,14 +88,16 @@ internal sealed class App : Application
         CreatePanel(); CreateTray();
         ScanWindows(); for (int i = 0; i < 5; i++) colony.SpawnFood();
         clock.Start();
-        timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(33) };
-        timer.Tick += Tick; timer.Start();
-        if (smoke) { panel.ShowActivated = false; panel.Show(); }
+        CompositionTarget.Rendering += RenderFrame;
+        maintenanceClock.Start();
+        timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(100) };
+        timer.Tick += MaintainDesktop; timer.Start();
+        if (smoke) { if (!frameTest) { panel.ShowActivated = false; panel.Show(); } }
         else OpenPanel();
         if (smoke)
         {
             var smokeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(smokeSeconds) };
-            smokeTimer.Tick += (_, _) => { smokeTimer.Stop(); SaveSmoke(); Shutdown(); }; smokeTimer.Start();
+            smokeTimer.Tick += (_, _) => { smokeTimer.Stop(); if (frameTest) SaveFrameTiming(); else SaveSmoke(); Shutdown(); }; smokeTimer.Start();
         }
     }
     void CreatePanel()
@@ -113,7 +122,7 @@ internal sealed class App : Application
         tray.ContextMenuStrip = menu; tray.MouseClick += (_, args) => { if (args.Button == Forms.MouseButtons.Left) Dispatcher.Invoke(OpenPanel); };
     }
     void OpenPanel() { panel.Show(); panel.Activate(); panel.Refresh(); }
-    void TogglePause() { paused = !paused; panel.Refresh(); }
+    void TogglePause() { paused = !paused; clock.Restart(); panel.Refresh(); surface.InvalidateVisual(); }
     void UpdateBounds()
     {
         var areas = NativeDesktop.WorkAreas(true);
@@ -122,7 +131,8 @@ internal sealed class App : Application
         double previousScale = scale; scale = NativeDesktop.DpiScale(overlay);
         var screens = areas.Select((a, i) => new Wall(i, (a.Left - bounds.Left) / scale, (a.Top - bounds.Top) / scale, (a.Right - a.Left) / scale, (a.Bottom - a.Top) / scale)).ToArray();
         var previousFoodAreas = colony.FoodAreas;
-        colony.FoodAreas = NativeDesktop.WorkAreas().Select((a, i) => new Wall(i, (a.Left - bounds.Left) / scale, (a.Top - bounds.Top) / scale, (a.Right - a.Left) / scale, (a.Bottom - a.Top) / scale)).ToArray();
+        var foodAreas = NativeDesktop.WorkAreas().Select((a, i) => new Wall(i, (a.Left - bounds.Left) / scale, (a.Top - bounds.Top) / scale, (a.Right - a.Left) / scale, (a.Bottom - a.Top) / scale)).ToArray();
+        if (!previousFoodAreas.SequenceEqual(foodAreas)) colony.FoodAreas = foodAreas;
         var primary = NativeDesktop.WorkArea();
         var nest = new Vec(((primary.Left + primary.Right) / 2.0 - bounds.Left) / scale, (primary.Bottom - bounds.Top) / scale - 24);
         if (!colony.Screens.SequenceEqual(screens) || !previousFoodAreas.SequenceEqual(colony.FoodAreas) || colony.Home != nest)
@@ -134,14 +144,41 @@ internal sealed class App : Application
             }
             colony.ConfigureScreens((bounds.Right - bounds.Left) / scale, (bounds.Bottom - bounds.Top) / scale, screens, nest, new Vec((work.Left - bounds.Left) / scale, (work.Top - bounds.Top) / scale));
         }
+        bool changed = work.Left != bounds.Left || work.Top != bounds.Top || work.Right != bounds.Right || work.Bottom != bounds.Bottom || Math.Abs(previousScale - scale) > .001;
         work = bounds;
-        overlay.Width = colony.Width; overlay.Height = colony.Height;
-        NativeDesktop.PlaceOverlay(overlayHandle, bounds);
+        if (changed || !NativeDesktop.BoundsMatch(overlayHandle, bounds))
+        {
+            overlay.Width = colony.Width; overlay.Height = colony.Height;
+            NativeDesktop.PlaceOverlay(overlayHandle, bounds);
+        }
     }
-    void ScanWindows() { UpdateBounds(); colony.UpdateWalls(NativeDesktop.Windows(overlayHandle, work, scale, scale)); }
-    void Tick(object? sender, EventArgs e)
+    void ScanWindows()
+    {
+        var walls = colony.Walls; var areas = colony.FoodAreas;
+        double width = colony.Width, height = colony.Height;
+        UpdateBounds(); colony.UpdateWalls(NativeDesktop.Windows(overlayHandle, work, scale, scale));
+        if (!ReferenceEquals(walls, colony.Walls) || !ReferenceEquals(areas, colony.FoodAreas) || width != colony.Width || height != colony.Height) surface.InvalidateVisual();
+    }
+    void AdvanceFrame()
     {
         double dt = Math.Min(.12, clock.Elapsed.TotalSeconds); clock.Restart();
+        if (!paused) colony.Step(dt * speed);
+        if (!paused && overlay.IsVisible) surface.UpdateFrame();
+    }
+    void RenderFrame(object? sender, EventArgs e)
+    {
+        // WPF can issue multiple callbacks for one composition frame.
+        if (e is RenderingEventArgs frame)
+        {
+            if (frame.RenderingTime == lastRenderingTime) return;
+            lastRenderingTime = frame.RenderingTime;
+        }
+        if (smoke) frameIntervals.Add(clock.Elapsed.TotalMilliseconds);
+        AdvanceFrame();
+    }
+    void MaintainDesktop(object? sender, EventArgs e)
+    {
+        double dt = maintenanceClock.Elapsed.TotalSeconds; maintenanceClock.Restart();
         scanClock += dt; refreshClock += dt; saveClock += dt;
         if (scanClock > .1) { ScanWindows(); scanClock = 0; }
         if (NativeDesktop.GetCursorPos(out var cursor))
@@ -149,10 +186,10 @@ internal sealed class App : Application
             var point = new Point((cursor.X - work.Left) / scale, (cursor.Y - work.Top) / scale);
             NativeDesktop.ClickThrough(overlayHandle, !surface.NestHitBox.Contains(point));
         }
-        if (!paused) colony.Step(dt * speed);
-        if (overlay.IsVisible) surface.InvalidateVisual();
+        // Keep the colony alive when no visible WPF window produces frames.
+        if (!overlay.IsVisible && !panel.IsVisible && clock.Elapsed.TotalSeconds >= .1) AdvanceFrame();
         if (refreshClock > .2) { if (panel.IsVisible) panel.Refresh(); refreshClock = 0; }
-        if (saveClock > 30 && !smoke) { Save(); saveClock = 0; }
+        if (saveClock > 30 && !smoke) { Save(true); saveClock = 0; }
     }
     void Reset()
     {
@@ -165,11 +202,19 @@ internal sealed class App : Application
         panel.Hide(); IsExiting = true; panel.Close(); IsExiting = false;
         CreatePanel(); OpenPanel(); speed = 1;
     }
-    void Save()
+    void Save(bool background = false)
+    {
+        if (background && !pendingSave.IsCompleted) return;
+        if (!background) pendingSave.GetAwaiter().GetResult();
+        var snapshot = colony.Snapshot();
+        if (background) pendingSave = Task.Run(() => WriteSnapshot(snapshot));
+        else WriteSnapshot(snapshot);
+    }
+    void WriteSnapshot(ColonySnapshot snapshot)
     {
         try {
             Directory.CreateDirectory(stateFolder); string target = Path.Combine(stateFolder, "colony.json"), temporary = target + ".tmp";
-            File.WriteAllText(temporary, JsonSerializer.Serialize(colony.Snapshot())); File.Move(temporary, target, true);
+            File.WriteAllText(temporary, JsonSerializer.Serialize(snapshot)); File.Move(temporary, target, true);
         } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* Simulation continues if the local save is unavailable. */ }
     }
     void SaveSmoke()
@@ -187,8 +232,18 @@ internal sealed class App : Application
         bool nestCutaway = RenderingChecks.NestCutaway(output);
         File.WriteAllText(Path.Combine(output, "native-check.json"), JsonSerializer.Serialize(checks));
         File.WriteAllText(Path.Combine(output, "nest-cutaway-check.json"), JsonSerializer.Serialize(new { nestCutaway }));
+        SaveFrameTiming();
         SaveDesktopDemo(output);
         if (!checks.desktopBoundsMatch || !checks.drawingSizeMatches || !checks.windowOcclusion || !checks.transparent || !checks.borderless || !checks.noActivate || !checks.hitPolicyMatchesCursor || !checks.foodOnFloor) throw new InvalidOperationException("原生桌面检查失败。");
+    }
+    void SaveFrameTiming()
+    {
+        if (frameIntervals.Count > 0)
+        {
+            string output = Path.Combine(AppContext.BaseDirectory, "smoke-results"); Directory.CreateDirectory(output);
+            var sorted = frameIntervals.OrderBy(value => value).ToArray();
+            File.WriteAllText(Path.Combine(output, "frame-timing.json"), JsonSerializer.Serialize(new { desktopOnly = frameTest, renderTier = RenderCapability.Tier >> 16, workers = colony.Workers.Count, frames = sorted.Length, averageMs = sorted.Average(), p95Ms = sorted[(int)((sorted.Length - 1) * .95)], maxMs = sorted[^1] }));
+        }
     }
     static void SaveDesktopDemo(string output)
     {
@@ -219,7 +274,7 @@ internal sealed class App : Application
     }
     protected override void OnExit(ExitEventArgs e)
     {
-        IsExiting = true; timer?.Stop(); if (!smoke && colony != null) Save();
+        IsExiting = true; CompositionTarget.Rendering -= RenderFrame; timer?.Stop(); if (!smoke && colony != null) Save();
         if (tray != null) { tray.Visible = false; tray.Dispose(); }
         trayIcon?.Dispose();
         singleInstance?.ReleaseMutex(); singleInstance?.Dispose(); base.OnExit(e);

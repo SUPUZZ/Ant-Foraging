@@ -96,20 +96,25 @@ internal static class RenderingChecks
         colony.Workers[2].Position = new Vec(410, 290);
         foreach (var ant in colony.Workers) ant.State = AntState.Searching;
         colony.UpdateWalls([new Wall(1, 250, 150, 210, 190), new Wall(2, 385, 260, 180, 130)]);
-        var ground = Render(colony);
+        var view = new OverlaySurface(colony) { Width = colony.Width, Height = colony.Height };
+        var ground = Render(colony, view);
         if (Visible(ground, colony.Workers[0].Position) || Visible(ground, colony.Workers[2].Position) || !Visible(ground, colony.Workers[1].Position))
             throw new InvalidOperationException("窗口下方或重叠窗口的遮挡绘制不正确。");
         foreach (var state in new[] { AntState.Climbing, AntState.OnWindow, AntState.Descending })
         {
             colony.Workers[0].State = state;
-            if (Visible(Render(colony), colony.Workers[0].Position)) throw new InvalidOperationException("旧爬墙状态的工蚁显示在窗口表面。");
+            if (Visible(Render(colony, view), colony.Workers[0].Position)) throw new InvalidOperationException("旧爬墙状态的工蚁显示在窗口表面。");
         }
         var position = colony.Workers[0].Position;
         colony.UpdateWalls([new Wall(1, 280, 180, 210, 190)]);
-        if (colony.Workers[0].Position != position || Visible(Render(colony), position)) throw new InvalidOperationException("移动窗口后工蚁移位或显示在窗口上。");
+        if (colony.Workers[0].Position != position || Visible(Render(colony, view), position)) throw new InvalidOperationException("移动窗口后工蚁移位或显示在窗口上。");
         colony.Workers[0].State = AntState.UnderWindow;
         colony.UpdateWalls([]);
-        if (!Visible(Render(colony), colony.Workers[0].Position)) throw new InvalidOperationException("移走窗口后未显露原位置的工蚁。");
+        if (!Visible(Render(colony, view), colony.Workers[0].Position)) throw new InvalidOperationException("移走窗口后未显露原位置的工蚁。");
+        colony.FoodAreas = [new Wall(0, 0, 0, 100, 100)];
+        if (Visible(Render(colony, view), colony.Workers[1].Position)) throw new InvalidOperationException("屏幕工作区域变化后遮挡缓存未更新。");
+        colony.FoodAreas = [];
+        if (!Visible(Render(colony, view), colony.Workers[1].Position)) throw new InvalidOperationException("恢复屏幕工作区域后工蚁仍被缓存遮挡。");
         return true;
     }
     static void NestLayering()
@@ -130,9 +135,10 @@ internal static class RenderingChecks
         if (changed < 20) throw new InvalidOperationException("Nest soil hides the passing ant.");
     }
 
-    static RenderTargetBitmap Render(DesktopColony colony)
+    static RenderTargetBitmap Render(DesktopColony colony, OverlaySurface? view = null)
     {
-        var view = new OverlaySurface(colony) { Width = colony.Width, Height = colony.Height };
+        view ??= new OverlaySurface(colony) { Width = colony.Width, Height = colony.Height };
+        view.InvalidateVisual();
         view.Measure(new Size(colony.Width, colony.Height)); view.Arrange(new Rect(0, 0, colony.Width, colony.Height)); view.UpdateLayout();
         var bitmap = new RenderTargetBitmap((int)colony.Width, (int)colony.Height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(view); return bitmap;
     }

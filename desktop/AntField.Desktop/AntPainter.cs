@@ -13,6 +13,24 @@ internal static class AntPainter
     internal static T Frozen<T>(T value) where T : Freezable { value.Freeze(); return value; }
     static readonly Dictionary<string, Brush> Colors = new();
     static readonly ImageSource[] Poses = LoadPoses();
+    internal static readonly DrawingGroup[] Sprites = CreateSprites();
+    static DrawingGroup[] CreateSprites()
+    {
+        var sprites = new DrawingGroup[Poses.Length];
+        for (int i = 0; i < sprites.Length; i++)
+        {
+            var drawing = new DrawingGroup();
+            using (var dc = drawing.Open())
+            {
+                dc.DrawEllipse(Shadow, null, new Point(1, 1.3), 8.5, 2.8);
+                dc.DrawImage(Poses[i], new Rect(-12, -8, 24, 16));
+            }
+            sprites[i] = Frozen(drawing);
+        }
+        return sprites;
+    }
+    internal static int PoseIndex(double distance, bool food, bool moving = true)
+        => (food ? 25 : 0) + (moving ? (int)((distance * .5 / (Math.PI * 2) % 1) * 24) : 24);
     static ImageSource[] LoadPoses()
     {
         var atlas = new BitmapImage(new Uri("pack://application:,,,/AntField;component/Assets/ant-atlas.png", UriKind.Absolute));
@@ -32,11 +50,14 @@ internal static class AntPainter
         => dc.DrawText(new FormattedText(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, new Typeface("Microsoft YaHei UI"), size, brush, dpi), position);
     internal static void Draw(DrawingContext dc, Point position, double heading, double size, double distance, double time, bool food, bool moving = true, double elevation = 0)
     {
-        dc.PushTransform(new TranslateTransform(position.X, position.Y));
-        dc.PushTransform(new RotateTransform(heading * 180 / Math.PI)); dc.PushTransform(new ScaleTransform(size, size));
-        dc.DrawEllipse(Shadow, null, new Point(1 + elevation * 2, 1.3 + elevation * 3), 8.5, 2.8);
-        int poseIndex = moving ? (int)((distance * .5 / (Math.PI * 2) % 1) * 24) : 24;
-        dc.DrawImage(Poses[(food ? 25 : 0) + poseIndex], new Rect(-12, -8, 24, 16));
-        dc.Pop(); dc.Pop(); dc.Pop();
+        double c = Math.Cos(heading) * size, s = Math.Sin(heading) * size;
+        dc.PushTransform(new MatrixTransform(new Matrix(c, s, -s, c, position.X, position.Y)));
+        if (elevation == 0) dc.DrawDrawing(Sprites[PoseIndex(distance, food, moving)]);
+        else
+        {
+            dc.DrawEllipse(Shadow, null, new Point(1 + elevation * 2, 1.3 + elevation * 3), 8.5, 2.8);
+            dc.DrawImage(Poses[PoseIndex(distance, food, moving)], new Rect(-12, -8, 24, 16));
+        }
+        dc.Pop();
     }
 }

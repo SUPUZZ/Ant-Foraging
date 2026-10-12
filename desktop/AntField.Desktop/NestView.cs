@@ -48,6 +48,8 @@ internal sealed class NestView : Grid
         scene.Children.Add(selection);
         scene.Children.Add(supplies); scene.Children.Add(brood); scene.Children.Add(inhabitants);
         queen = new Model3DGroup(); queen.Children.Add(NestGeometry3D.Queen);
+        var queenPosition = NestGeometry3D.ChamberPoint(0, -.12, -.08);
+        queen.Transform = Placement(queenPosition.X, queenPosition.Y, 12, 1.15);
         inhabitants.Children.Add(queen);
         viewport.Children.Add(new ModelVisual3D { Content = scene });
 
@@ -150,7 +152,7 @@ internal sealed class NestView : Grid
         foreach (var entry in visible)
         {
             if (workers.TryGetValue(entry.Ant.Id, out var existing)) { workers[entry.Ant.Id] = (existing.Model, entry.Ant, entry.Chamber); continue; }
-            var model = new Model3DGroup(); model.Children.Add(NestGeometry3D.AntPoses[0]);
+            var model = new Model3DGroup { Transform = new MatrixTransform3D() }; model.Children.Add(NestGeometry3D.AntPoses[0]);
             inhabitants.Children.Add(model); workers.Add(entry.Ant.Id, (model, entry.Ant, entry.Chamber));
         }
         Animate();
@@ -159,8 +161,6 @@ internal sealed class NestView : Grid
     void Animate()
     {
         double time = colony.Time;
-        var queenPosition = NestGeometry3D.ChamberPoint(0, -.12, -.08);
-        queen.Transform = Placement(queenPosition.X, queenPosition.Y, 12, 1.15);
         foreach (var entry in workers.Values)
         {
             double phase = time * .45 + entry.Worker.Id * 2.399;
@@ -169,19 +169,21 @@ internal sealed class NestView : Grid
             double x = point.X, y = point.Y;
             var tangent = NestGeometry3D.ChamberPoint(entry.Chamber, Math.Cos(phase) * rx, -.9 * Math.Sin(phase * .9) * ry) - NestGeometry3D.Centers[entry.Chamber];
             double angle = Math.Atan2(tangent.Y, tangent.X) * 180 / Math.PI;
-            entry.Model.Children[0] = NestGeometry3D.AntPoses[(int)(time * 8 + entry.Worker.Id) % NestGeometry3D.AntPoses.Length];
-            entry.Model.Transform = Placement(x, y, angle, .48);
+            var pose = NestGeometry3D.AntPoses[(int)(time * 8 + entry.Worker.Id) % NestGeometry3D.AntPoses.Length];
+            if (!ReferenceEquals(entry.Model.Children[0], pose)) entry.Model.Children[0] = pose;
+            ((MatrixTransform3D)entry.Model.Transform).Matrix = PlacementMatrix(x, y, angle, .48);
         }
         renderedTime = time;
     }
 
     static Transform3D Placement(double x, double y, double angle, double scale)
     {
-        var transform = new Transform3DGroup();
-        transform.Children.Add(new ScaleTransform3D(scale, scale, scale));
-        transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 0, 1), angle)));
-        transform.Children.Add(new TranslateTransform3D(x, y, NestGeometry3D.Depth(x, y) + .08));
-        return transform;
+        return AntPainter.Frozen(new MatrixTransform3D(PlacementMatrix(x, y, angle, scale)));
+    }
+    static Matrix3D PlacementMatrix(double x, double y, double angle, double scale)
+    {
+        double radians = angle * Math.PI / 180, c = Math.Cos(radians) * scale, s = Math.Sin(radians) * scale;
+        return new Matrix3D(c, s, 0, 0, -s, c, 0, 0, 0, 0, scale, 0, x, y, NestGeometry3D.Depth(x, y) + .08, 1);
     }
 
     void UpdateRendering()
@@ -190,5 +192,5 @@ internal sealed class NestView : Grid
         else if (!IsLoaded || !IsVisible) StopRendering();
     }
     void StopRendering() { if (rendering) { CompositionTarget.Rendering -= RenderFrame; rendering = false; } }
-    void RenderFrame(object? sender, EventArgs e) { if (Math.Abs(colony.Time - renderedTime) >= 1.0 / 35) Animate(); }
+    void RenderFrame(object? sender, EventArgs e) { if (colony.Time != renderedTime) Animate(); }
 }
