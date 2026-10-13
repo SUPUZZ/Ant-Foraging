@@ -30,19 +30,18 @@ internal sealed class App : Application
     IntPtr overlayHandle;
     NativeDesktop.NativeRect work;
     double scale = 1, speed = 1, scanClock, refreshClock, saveClock;
-    bool paused, smoke, frameTest;
+    bool paused, smoke, frameTest, persistenceTest;
     int smokeSeconds = 3;
     readonly Stopwatch clock = new();
     readonly Stopwatch maintenanceClock = new();
     TimeSpan lastRenderingTime = TimeSpan.MinValue;
     Task pendingSave = Task.CompletedTask;
     readonly List<double> frameIntervals = new();
-    readonly string stateFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AntField");
+    string stateFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AntField");
     ProgressStore progressStore = null!;
     string runId = Guid.NewGuid().ToString("N"), saveStatus = "尚未保存", historyText = "暂无历史进度。";
-    bool restoredProgress, resetPending;
+    bool restoredProgress;
     SavedProgress? loadedProgress;
-    internal Func<Window, bool> ResetConfirmation { get; set; } = owner => System.Windows.MessageBox.Show(owner, "重建蚁群会重置当前游戏进度，包括工蚁、储粮、食物、育幼和觅食路径。\n\n重建前的进度会保存为历史记录。确定要重建吗？", "重建蚁群", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes;
     internal DesktopColony CurrentColony => colony;
     internal ColonyWindow CurrentPanel => panel;
     Mutex? singleInstance;
@@ -51,6 +50,11 @@ internal sealed class App : Application
     {
         var app = new App { ShutdownMode = ShutdownMode.OnExplicitShutdown, smoke = args.Contains("--smoke-test") };
         if (args.Contains("--frame-test")) { app.smoke = true; app.frameTest = true; app.smokeSeconds = 8; }
+        if (args.Contains("--persistence-test"))
+        {
+            app.smoke = app.frameTest = app.persistenceTest = true; app.smokeSeconds = 2;
+            app.stateFolder = Path.Combine(AppContext.BaseDirectory, "smoke-results", "persistence");
+        }
         if (args.Contains("--ui-test")) { app.smoke = true; app.smokeSeconds = 60; }
         app.singleInstance = new Mutex(true, app.smoke ? "Local\\AntFieldSmokeTest" : "Local\\AntFieldDesktop", out bool created);
         if (!created) { System.Windows.MessageBox.Show("桌面蚁境已经在运行，请从系统托盘打开蚁窝。", "桌面蚁境"); app.singleInstance.Dispose(); return; }
@@ -66,7 +70,7 @@ internal sealed class App : Application
         var initial = SystemParameters.WorkArea;
         colony = new DesktopColony(initial.Width, initial.Height, frameTest ? 120 : 48);
         progressStore = new ProgressStore(stateFolder);
-        if (!smoke)
+        if (!smoke || persistenceTest)
         {
             loadedProgress = progressStore.Load();
             if (loadedProgress != null)
@@ -99,7 +103,7 @@ internal sealed class App : Application
         overlay.Icon = BitmapFrame.Create(IconUri);
         overlay.Show();
         CreatePanel(); CreateTray();
-        ScanWindows(); if (!restoredProgress) for (int i = 0; i < 5; i++) colony.SpawnFood();
+        ScanWindows(); if (!restoredProgress) colony.SpawnFood();
         if (!smoke && !restoredProgress && !progressStore.LoadFailed) Save(true);
         clock.Start();
         CompositionTarget.Rendering += RenderFrame;
@@ -120,7 +124,6 @@ internal sealed class App : Application
         panel.SpeedChanged = value => speed = value;
         panel.TrailsChanged = value => surface.ShowTrails = value;
         panel.WallsChanged = value => surface.ShowWalls = value;
-        panel.ResetRequested = Reset;
         panel.SaveRequested = () => Save(true);
         panel.ProgressText = () => $"累计仿真时间 {TimeSpan.FromSeconds(colony.Time):d\\天\\ hh\\:mm\\:ss} · 累计羽化 {colony.Births} 只 · {saveStatus}";
         panel.HistoryText = () => historyText;
@@ -140,7 +143,7 @@ internal sealed class App : Application
         tray.ContextMenuStrip = menu; tray.MouseClick += (_, args) => { if (args.Button == Forms.MouseButtons.Left) Dispatcher.Invoke(OpenPanel); };
     }
     void OpenPanel() { panel.Show(); panel.Activate(); panel.Refresh(); }
-    void TogglePause() { if (resetPending) return; paused = !paused; clock.Restart(); panel.Refresh(); surface.InvalidateVisual(); }
+    void TogglePause() { paused = !paused; clock.Restart(); panel.Refresh(); surface.InvalidateVisual(); }
     void UpdateBounds()
     {
         var areas = NativeDesktop.WorkAreas(true);
@@ -207,36 +210,7 @@ internal sealed class App : Application
         // Keep the colony alive when no visible WPF window produces frames.
         if (!overlay.IsVisible && !panel.IsVisible && clock.Elapsed.TotalSeconds >= .1) AdvanceFrame();
         if (refreshClock > .2) { if (panel.IsVisible) panel.Refresh(); refreshClock = 0; }
-        if (saveClock > 30 && !smoke && !resetPending) { Save(true); saveClock = 0; }
-    }
-    void Reset()
-    {
-        if (resetPending) return;
-        resetPending = true; bool wasPaused = paused; paused = true; panel.Refresh();
-        try
-        {
-        if (!ResetConfirmation(panel)) { paused = wasPaused; return; }
-        pendingSave.GetAwaiter().GetResult();
-        var screens = colony.Screens; var nest = colony.Home;
-        var nextColony = new DesktopColony(overlay.Width, overlay.Height) { FoodAreas = colony.FoodAreas };
-        nextColony.ConfigureScreens(overlay.Width, overlay.Height, screens, nest); nextColony.UpdateWalls(colony.Walls);
-        for (int i = 0; i < 5; i++) nextColony.SpawnFood();
-        var next = new SavedProgress(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, nextColony.Snapshot(), 1, false, surface.ShowTrails, surface.ShowWalls);
-        if (!smoke)
-        {
-            try { progressStore.Reset(CaptureProgress() with { Paused = wasPaused }, next); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { paused = wasPaused; saveStatus = "重建取消：进度保存失败"; System.Windows.MessageBox.Show(panel, "无法保存当前进度，尚未重建蚁群。请检查存储空间和文件权限后重试。", "保存失败", MessageBoxButton.OK, MessageBoxImage.Error); return; }
-        }
-        colony = nextColony; runId = next.RunId; speed = 1; saveClock = 0;
-        saveStatus = "新进度已保存"; if (!smoke) RefreshHistory();
-        surface = new OverlaySurface(colony) { ShowTrails = surface.ShowTrails, ShowWalls = surface.ShowWalls };
-        overlay.Content = surface; surface.MouseLeftButtonDown += (_, args) => { if (surface.NestHitBox.Contains(args.GetPosition(surface))) OpenPanel(); };
-        ScanWindows();
-        panel.Hide(); IsExiting = true; panel.Close(); IsExiting = false;
-        CreatePanel(); if (smoke) { panel.ShowActivated = false; panel.Show(); } else OpenPanel();
-        paused = false;
-        }
-        finally { resetPending = false; clock.Restart(); panel.Refresh(); }
+        if (saveClock > 30 && !smoke) { Save(true); saveClock = 0; }
     }
     SavedProgress CaptureProgress() => new(runId, DateTimeOffset.UtcNow, colony.Snapshot(), speed, paused, surface.ShowTrails, surface.ShowWalls);
     void RefreshHistory()
@@ -244,13 +218,13 @@ internal sealed class App : Application
         try
         {
             var records = progressStore.History();
-            historyText = records.Length == 0 ? "暂无历史进度。重建前的进度会保留在这里。" : string.Join("\n", records.Select(r => $"{r.SavedAt.ToLocalTime():yyyy-MM-dd HH:mm} · 累计 {TimeSpan.FromSeconds(r.Colony.Time).TotalMinutes:0.0} 分钟 · 工蚁 {r.Colony.Workers.Length} · 运回 {r.Colony.Delivered} · 羽化 {r.Colony.Births}"));
+            historyText = records.Length == 0 ? "同一蚁群持续观察，退出时保存，下次接续。" : string.Join("\n", records.Select(r => $"{r.SavedAt.ToLocalTime():yyyy-MM-dd HH:mm} · 累计 {TimeSpan.FromSeconds(r.Colony.Time).TotalMinutes:0.0} 分钟 · 工蚁 {r.Colony.Workers.Length} · 运回 {r.Colony.Delivered} · 羽化 {r.Colony.Births}"));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { historyText = "暂时无法读取历史记录。"; }
     }
     void Save(bool background = false)
     {
-        if (smoke) return;
+        if (smoke && !persistenceTest) return;
         if (background && !pendingSave.IsCompleted) return;
         if (!background) pendingSave.GetAwaiter().GetResult();
         var snapshot = CaptureProgress();
@@ -283,7 +257,7 @@ internal sealed class App : Application
         var checks = new { screens = colony.Screens.Count, desktopBoundsMatch = NativeDesktop.BoundsMatch(overlayHandle, work), drawingSizeMatches = Math.Abs(surface.ActualWidth - colony.Width) < 1 && Math.Abs(surface.ActualHeight - colony.Height) < 1, windows = colony.Walls.Count, time = colony.Time, width = colony.Width, height = colony.Height, dpi = scale, transparent = overlay.AllowsTransparency, borderless = overlay.WindowStyle == WindowStyle.None, noActivate = (style & 0x08000000) != 0, hitPolicyMatchesCursor, foodOnFloor = colony.Foods.All(f => colony.CanWalk(f.Position)), workers = colony.Workers.Count, windowOcclusion = RenderingChecks.WindowOcclusion() };
         bool nestCutaway = RenderingChecks.NestCutaway(output);
         RenderingChecks.LargeFood(output);
-        RenderingChecks.ResetConfirmation(this);
+        RenderingChecks.LongTermObservation(this, output);
         File.WriteAllText(Path.Combine(output, "native-check.json"), JsonSerializer.Serialize(checks));
         File.WriteAllText(Path.Combine(output, "nest-cutaway-check.json"), JsonSerializer.Serialize(new { nestCutaway }));
         SaveFrameTiming();
@@ -328,7 +302,7 @@ internal sealed class App : Application
     }
     protected override void OnExit(ExitEventArgs e)
     {
-        IsExiting = true; CompositionTarget.Rendering -= RenderFrame; timer?.Stop(); if (!smoke && colony != null) Save();
+        IsExiting = true; CompositionTarget.Rendering -= RenderFrame; timer?.Stop(); if ((!smoke || persistenceTest) && colony != null) Save();
         if (tray != null) { tray.Visible = false; tray.Dispose(); }
         trayIcon?.Dispose();
         singleInstance?.ReleaseMutex(); singleInstance?.Dispose(); base.OnExit(e);

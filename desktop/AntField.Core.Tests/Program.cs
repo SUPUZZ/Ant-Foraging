@@ -347,7 +347,7 @@ Test("An empty worker follows a local food trail outward without knowing the sou
     Check(c.CanWalk(ant.Position) && !ant.HasFood, "Trail following left the floor or invented food");
 });
 Test("Progress restores trails, food memory, fatigue and colony clocks", () => {
-    var c = new DesktopColony(900, 650, 3); c.Step(18.25);
+    var c = new DesktopColony(900, 650, 3); c.SpawnFood(); c.Step(18.25);
     c.Workers[0].State = AntState.InNest; c.Workers[0].Timer = 7.25; c.Workers[0].FoodSourceId = c.Foods[0].Id;
     c.Workers[1].State = AntState.Returning; c.Workers[1].HasFood = false; c.Workers[1].Energy = 18;
     for (int i = 0; i < c.Pheromones.Length; i++) if (c.Navigation.HomeDistance[i] >= 0) c.Pheromones[i] = (i % 13) / 2f;
@@ -361,7 +361,7 @@ Test("Progress restores trails, food memory, fatigue and colony clocks", () => {
     var resized = DesktopColony.Restore(saved, 1100, 750); Check(resized.Pheromones.All(v => v == 0), "Resizing pasted trails into unrelated cells");
     var old = saved with { Version = 1, Pheromones = null }; Check(DesktopColony.Restore(old, c.Width, c.Height).Time == c.Time, "Legacy progress no longer loads");
 });
-Test("Progress files migrate legacy saves, recover backups and archive resets", () => {
+Test("Progress files migrate legacy saves, recover backups and retain old history", () => {
     string folder = Path.Combine(Path.GetTempPath(), "AntField-progress-test-" + Guid.NewGuid().ToString("N"));
     try
     {
@@ -377,26 +377,57 @@ Test("Progress files migrate legacy saves, recover backups and archive resets", 
         File.WriteAllText(store.PathName, "broken");
         var recovered = store.Load()!; Check(store.RecoveredBackup && recovered.Colony.Time == first.Colony.Time && recovered.RunId == first.RunId, "Corruption discarded the available backup");
         store.Save(second);
-        var next = new SavedProgress(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, new DesktopColony(900, 650).Snapshot());
-        store.Reset(second, next);
-        Check(store.Load()!.RunId == next.RunId && store.Load()!.Colony.Time == 0, "Reset failed to persist the new run immediately");
-        var history = store.History(); Check(history.Length == 1 && history[0].RunId == second.RunId && history[0].Colony.Time == second.Colony.Time, "Reset erased the previous run instead of recording it");
+        Check(store.Load()!.RunId == second.RunId && store.Load()!.Colony.Time == second.Colony.Time, "Continuing observation changed colony identity");
+        string historyFolder = Path.Combine(folder, "history"); Directory.CreateDirectory(historyFolder);
+        File.WriteAllText(Path.Combine(historyFolder, second.RunId + ".json"), JsonSerializer.Serialize(second));
+        var history = store.History(); Check(history.Length == 1 && history[0].RunId == second.RunId, "Earlier observations are no longer readable");
         Conserved(DesktopColony.Restore(history[0].Colony, 900, 650));
     }
     finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
 });
-Test("Failed reset persistence keeps the active progress intact", () => {
+Test("Failed save keeps the last successful observation intact", () => {
     string folder = Path.Combine(Path.GetTempPath(), "AntField-progress-failure-" + Guid.NewGuid().ToString("N"));
     try
     {
         var store = new ProgressStore(folder); var c = new DesktopColony(900, 650); c.Step(13);
         var previous = new SavedProgress(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, c.Snapshot()); store.Save(previous);
-        File.WriteAllText(Path.Combine(folder, "history"), "blocked-directory");
+        Directory.CreateDirectory(store.PathName + ".tmp");
         bool failed = false;
-        try { store.Reset(previous, previous with { RunId = Guid.NewGuid().ToString("N"), Colony = new DesktopColony(900, 650).Snapshot() }); }
-        catch (IOException) { failed = true; }
-        Check(failed && store.Load()!.RunId == previous.RunId && store.Load()!.Colony.Time == previous.Colony.Time, "A failed reset overwrote active progress");
+        try { store.Save(previous with { SavedAt = previous.SavedAt.AddMinutes(1) }); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { failed = true; }
+        Check(failed && store.Load()!.RunId == previous.RunId && store.Load()!.Colony.Time == previous.Colony.Time, "A failed save overwrote active progress");
     }
     finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+});
+Test("Slow nest development follows colony labour and continues beyond initial strata", () => {
+    var small = new NestDevelopment(); var large = new NestDevelopment();
+    small.Advance(3600, 48, 100, 20); large.Advance(3600, 96, 100, 20);
+    Check(small.CompletedRooms == 0 && large.WorkHours == 2 * small.WorkHours, "Expansion is too fast or ignores worker population");
+    Check(small.ExitScale > 1 && small.ExitScale < 1.012, "Entrances expanded abruptly within an hour");
+    double before = small.WorkHours; small.Advance(3600, 48, 100, 0); small.Advance(3600, 48, 20, 20);
+    Check(small.WorkHours == before, "A starving or exhausted colony excavated new rooms");
+    small.Advance(30 * 86400, 48, 100, 20); long rooms = small.CompletedRooms;
+    small.Advance(365 * 86400, 48, 100, 20);
+    Check(small.CompletedRooms > rooms && small.DeepestLayer > 4 && NestDevelopment.QueenCount == 1, "Nest growth hit a finite upgrade cap or produced more queens");
+    Check(small.RoomsInLayer(small.DeepestLayer) <= 4 && small.RoomsInLayer(1) == 4, "Completed layers were erased by deeper excavation");
+});
+Test("Nest excavation and rare-food clocks survive a persisted restart", () => {
+    var c = new DesktopColony(900, 650, 3); c.SpawnFood(); c.Step(40);
+    c.Development.Advance(72 * 3600, 48, 100, 20);
+    var saved = JsonSerializer.Deserialize<ColonySnapshot>(JsonSerializer.Serialize(c.Snapshot()))!;
+    var next = DesktopColony.Restore(saved, c.Width, c.Height);
+    Check(next.Development.WorkHours == c.Development.WorkHours && next.Development.CompletedRooms == c.Development.CompletedRooms && next.Development.ExitScale == c.Development.ExitScale, "Restart erased the evolving nest");
+    Check(next.Snapshot().NextSpawn == saved.NextSpawn && next.SpawnInterval == c.SpawnInterval, "Restart accelerated auto-feeding");
+    var legacy = DesktopColony.Restore(saved with { Version = 2, NestWorkHours = 0, SpawnInterval = 14, NextSpawn = 3 }, c.Width, c.Height);
+    Check(legacy.Time == c.Time && legacy.Stored == c.Stored && legacy.Workers.Count == c.Workers.Count && legacy.SpawnInterval >= 180 && legacy.Snapshot().NextSpawn >= 120, "Legacy migration reset progress or retained rapid auto-feeding");
+});
+Test("Automatic food is sparse and waits for existing supply to diminish", () => {
+    var c = new DesktopColony(900, 650, 0); c.Nursery.Clear();
+    c.Step(179); Check(c.Foods.Count == 0, "Auto-feeding still happens every few seconds");
+    c.Step(2); Check(c.Foods.Count == 1, "Food did not appear after the base interval");
+    for (int i = 0; i < 4; i++) c.SpawnFood();
+    int spawned = c.Spawned; c.Step(600);
+    Check(c.Spawned == spawned, "Automatic food accumulated while supplies remained");
+    c.Foods.Clear(); c.Step(300); Check(c.Spawned > spawned, "Automatic food never resumed after depletion");
 });
 Console.WriteLine($"{passed} desktop simulation checks passed.");

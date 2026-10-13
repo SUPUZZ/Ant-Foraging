@@ -7,12 +7,17 @@ namespace AntField.Desktop;
 // Build the textured entrance once; reuse the frozen drawing on every frame.
 internal static class NestPainter
 {
-    static readonly DrawingImage Entrance = CreateEntrance();
+    static DrawingImage entrance = CreateEntrance(1);
+    static int entranceStep;
 
-    internal static void Draw(DrawingContext dc, Point home)
-        => dc.DrawImage(Entrance, new Rect(home.X - 48, home.Y - 24, 96, 46));
+    internal static void Draw(DrawingContext dc, Point home, double exitScale = 1)
+    {
+        int step = (int)Math.Floor((exitScale - 1) * 1000);
+        if (step != entranceStep) { entrance = CreateEntrance(1 + step / 1000.0); entranceStep = step; }
+        dc.DrawImage(entrance, new Rect(home.X - 48, home.Y - 24, 96, 46));
+    }
 
-    static DrawingImage CreateEntrance()
+    static DrawingImage CreateEntrance(double exitScale)
     {
         var drawing = new DrawingGroup();
         var random = new Random(731);
@@ -53,9 +58,9 @@ internal static class NestPainter
             }
 
             // Three uneven entrances share the same low mound of excavated soil.
-            DrawHole(dc, random, 48, 24, 10.5, 4.5);
-            DrawHole(dc, random, 24, 28, 7, 3.5);
-            DrawHole(dc, random, 71, 28.5, 7.5, 3.4);
+            DrawHole(dc, random, 48, 24, 10.5 * (1 + (exitScale - 1) * .5), 4.5 * exitScale);
+            DrawHole(dc, random, 24, 28, 7 * (1 + (exitScale - 1) * .5), 3.5 * exitScale);
+            DrawHole(dc, random, 71, 28.5, 7.5 * (1 + (exitScale - 1) * .5), 3.4 * exitScale);
             dc.Pop();
 
             // A few loose grains break up the silhouette rather than forming a badge.

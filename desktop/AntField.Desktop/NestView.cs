@@ -13,13 +13,31 @@ namespace AntField.Desktop;
 
 internal sealed class NestView : Grid
 {
+    static readonly ControlTemplate RoomTemplate = (ControlTemplate)System.Windows.Markup.XamlReader.Parse("""
+        <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
+          <Border x:Name="border" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="2">
+            <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="border" Property="Opacity" Value="0.4" /></Trigger>
+            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="border" Property="Opacity" Value="0.8" /></Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+        """);
+    static Button LayerButton(string text) => new() { Content = text, Template = RoomTemplate, Padding = new Thickness(6), Margin = new Thickness(2), Background = AntPainter.ColorBrush("#293b30"), Foreground = AntPainter.ColorBrush("#ccd8be"), BorderBrush = AntPainter.ColorBrush("#53654c"), BorderThickness = new Thickness(1), Cursor = Cursors.Hand };
     readonly DesktopColony colony;
     readonly Viewport3D viewport = new();
     readonly PerspectiveCamera camera = new() { FieldOfView = 43, NearPlaneDistance = .1, FarPlaneDistance = 400 };
     readonly Model3DGroup inhabitants = new(), supplies = new(), brood = new();
     readonly Dictionary<int, (Model3DGroup Model, Worker Worker, int Chamber)> workers = new();
     readonly Button[] roomButtons = new Button[4];
-    readonly GeometryModel3D terrain;
+    GeometryModel3D terrain;
+    readonly Model3DGroup cutaway = new();
+    readonly TextBlock layerText = new() { Foreground = AntPainter.ColorBrush("#ccd8be"), Margin = new Thickness(8, 7, 8, 0) };
+    Button shallower = null!, deeper = null!;
+    NestStratum? stratum;
+    int excavationStep;
+    public long Layer { get; private set; }
     readonly Model3DGroup queen;
     readonly Model3DGroup selection = new();
     Point pressed, previous;
@@ -29,6 +47,7 @@ internal sealed class NestView : Grid
     int stored = -1;
     public int Selected { get; private set; } = 1;
     public event Action<int>? ChamberSelected;
+    internal int VisibleQueens => inhabitants.Children.Contains(queen) ? 1 : 0;
     internal (int Workers, int Food, int Brood) VisibleCounts => (workers.Count, supplies.Children.Count, brood.Children.Count);
 
     public NestView(DesktopColony colony)
@@ -42,9 +61,9 @@ internal sealed class NestView : Grid
         scene.Children.Add(new AmbientLight(System.Windows.Media.Color.FromRgb(105, 105, 100)));
         scene.Children.Add(new DirectionalLight(System.Windows.Media.Color.FromRgb(255, 238, 209), new Vector3D(-.4, -.7, -1)));
         scene.Children.Add(new DirectionalLight(System.Windows.Media.Color.FromRgb(111, 135, 127), new Vector3D(.8, .1, -.6)));
-        terrain = NestGeometry3D.CreateTerrain(); scene.Children.Add(terrain);
-        scene.Children.Add(NestGeometry3D.CreateSoilBlock());
-        scene.Children.Add(NestGeometry3D.CreateSurface());
+        terrain = NestGeometry3D.CreateTerrain(); cutaway.Children.Add(terrain);
+        cutaway.Children.Add(NestGeometry3D.CreateSoilBlock());
+        cutaway.Children.Add(NestGeometry3D.CreateSurface()); scene.Children.Add(cutaway);
         scene.Children.Add(selection);
         scene.Children.Add(supplies); scene.Children.Add(brood); scene.Children.Add(inhabitants);
         queen = new Model3DGroup(); queen.Children.Add(NestGeometry3D.Queen);
@@ -57,7 +76,7 @@ internal sealed class NestView : Grid
         for (int i = 0; i < 4; i++)
         {
             int index = i;
-            var button = new Button { Content = NestGeometry3D.Names[i], Padding = new Thickness(10, 7, 10, 7), Margin = new Thickness(3),
+            var button = new Button { Template = RoomTemplate, Content = NestGeometry3D.Names[i], Padding = new Thickness(10, 7, 10, 7), Margin = new Thickness(3),
                 Foreground = AntPainter.ColorBrush("#e1e5ce"), BorderThickness = new Thickness(1), Cursor = Cursors.Hand };
             button.Click += (_, _) => SelectChamber(index);
             System.Windows.Automation.AutomationProperties.SetName(button, $"查看{NestGeometry3D.Names[i]}");
@@ -68,6 +87,13 @@ internal sealed class NestView : Grid
             Margin = new Thickness(12), Padding = new Thickness(10, 5, 10, 5), Background = AntPainter.ColorBrush("#293b30"), Foreground = AntPainter.ColorBrush("#ccd8be"), BorderBrush = AntPainter.ColorBrush("#53654c") };
         reset.Click += (_, _) => { yaw = 22; pitch = 20; distance = 28; UpdateCamera(); };
         Children.Add(reset);
+        var layers = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(12) };
+        shallower = LayerButton("↑ 上层");
+        deeper = LayerButton("↓ 下层");
+        shallower.Click += (_, _) => ShowLayer(Layer - 1); deeper.Click += (_, _) => ShowLayer(Layer + 1);
+        var deepest = LayerButton("开掘前沿");
+        deepest.Click += (_, _) => ShowLayer(colony.Development.DeepestLayer);
+        layers.Children.Add(shallower); layers.Children.Add(layerText); layers.Children.Add(deeper); layers.Children.Add(deepest); Children.Add(layers);
         viewport.MouseLeftButtonDown += (_, e) => { pressed = previous = e.GetPosition(viewport); dragging = false; viewport.CaptureMouse(); e.Handled = true; };
         viewport.MouseMove += (_, e) => {
             if (!viewport.IsMouseCaptured) return;
@@ -99,7 +125,7 @@ internal sealed class NestView : Grid
         VisualTreeHelper.HitTest(viewport, null, result => {
             if (result is RayMeshGeometry3DHitTestResult hit && ReferenceEquals(hit.ModelHit, terrain))
             {
-                for (int i = 0; i < 4; i++) if (NestGeometry3D.InChamber(i, hit.PointHit.X, hit.PointHit.Y)) { SelectChamber(i); selected = true; break; }
+                for (int i = 0; i < 4; i++) if (stratum == null ? NestGeometry3D.InChamber(i, hit.PointHit.X, hit.PointHit.Y) : stratum.InChamber(i, hit.PointHit.X, hit.PointHit.Y)) { SelectChamber(i); selected = true; break; }
                 return HitTestResultBehavior.Stop;
             }
             return HitTestResultBehavior.Continue;
@@ -111,17 +137,48 @@ internal sealed class NestView : Grid
 
     void UpdateSelection()
     {
-        selection.Children.Clear(); selection.Children.Add(NestGeometry3D.ChamberRim(Selected));
+        selection.Children.Clear(); if (stratum == null) selection.Children.Add(NestGeometry3D.ChamberRim(Selected));
+        else if (Selected < Math.Floor(stratum.Excavated)) selection.Children.Add(stratum.Rim(Selected));
         for (int i = 0; i < 4; i++)
         {
+            roomButtons[i].Content = stratum == null ? NestGeometry3D.Names[i] : new[] { "扩建育幼室", "扩建休息室", "扩建粮仓", "深层休息室" }[i];
+            System.Windows.Automation.AutomationProperties.SetName(roomButtons[i], $"查看{roomButtons[i].Content}");
+            roomButtons[i].IsEnabled = stratum == null || i < Math.Floor(stratum.Excavated);
             roomButtons[i].Background = AntPainter.ColorBrush(i == Selected ? "#475339" : "#203127");
             roomButtons[i].BorderBrush = AntPainter.ColorBrush(i == Selected ? "#b8ca8c" : "#435640");
         }
     }
 
+    internal void ShowLayer(long layer)
+    {
+        Layer = Math.Clamp(layer, 0, colony.Development.DeepestLayer); excavationStep = -1;
+        RefreshScene(); ChamberSelected?.Invoke(Selected);
+    }
+    void RefreshCutaway()
+    {
+        layerText.Text = Layer == 0 ? "主巢 · 蚁后 1" : $"地下第 {Layer} 层";
+        shallower.IsEnabled = Layer > 0; deeper.IsEnabled = Layer < colony.Development.DeepestLayer;
+        int step = Layer == 0 ? 0 : (int)Math.Floor(colony.Development.RoomsInLayer(Layer) * 20);
+        if (step == excavationStep) return;
+        excavationStep = step; stratum = Layer == 0 ? null : new NestStratum(Layer, step / 20.0);
+        cutaway.Children.Clear(); terrain = stratum == null ? NestGeometry3D.CreateTerrain() : NestGeometry3D.CreateTerrain(stratum.Depth);
+        cutaway.Children.Add(terrain); cutaway.Children.Add(NestGeometry3D.CreateSoilBlock());
+        if (stratum == null) cutaway.Children.Add(NestGeometry3D.CreateSurface());
+        if (stratum == null && !inhabitants.Children.Contains(queen)) inhabitants.Children.Add(queen);
+        if (stratum != null) inhabitants.Children.Remove(queen);
+        stored = -1; broodStages = "!"; UpdateSelection();
+    }
+    Point ChamberPoint(int chamber, double x, double y) => stratum == null ? NestGeometry3D.ChamberPoint(chamber, x, y) : stratum.Centers[chamber] + new Vector(x * 1.2, y * .65);
+    double Depth(double x, double y) => stratum == null ? NestGeometry3D.Depth(x, y) : stratum.Depth(x, y);
     public void RefreshScene()
     {
-        int visibleFood = Math.Min(colony.Stored, 70);
+        RefreshCutaway();
+        int completed = stratum == null ? 4 : (int)Math.Floor(stratum.Excavated);
+        long total = colony.Development.CompletedRooms;
+        long foodLayers = 1 + total / 4 + (total % 4 >= 3 ? 1 : 0);
+        long nurseryLayers = 1 + total / 4 + (total % 4 >= 1 ? 1 : 0);
+        int visibleFood = completed >= 3 ? (int)Math.Min(70, colony.Stored / foodLayers + (Layer < colony.Stored % foodLayers ? 1 : 0)) : 0;
+        var localBrood = colony.Nursery.Where((_, i) => i % nurseryLayers == Layer).ToArray();
         if (stored != visibleFood)
         {
             stored = visibleFood; supplies.Children.Clear();
@@ -129,24 +186,24 @@ internal sealed class NestView : Grid
             for (int i = 0; i < visibleFood; i++)
             {
                 double angle = random.NextDouble() * Math.PI * 2, radius = Math.Sqrt(random.NextDouble());
-                var point = NestGeometry3D.ChamberPoint(2, Math.Cos(angle) * radius * .65, Math.Sin(angle) * radius * .6);
+                var point = ChamberPoint(2, Math.Cos(angle) * radius * .65, Math.Sin(angle) * radius * .6);
                 double x = point.X, y = point.Y;
-                supplies.Children.Add(NestGeometry3D.Pellet(x, y, NestGeometry3D.Depth(x, y) + .1, i));
+                supplies.Children.Add(NestGeometry3D.Pellet(x, y, Depth(x, y) + .1, i));
             }
         }
-        string stages = string.Join(',', colony.Nursery.Select(b => (int)b.Stage));
+        string stages = string.Join(',', localBrood.Select(b => (int)b.Stage));
         if (stages != broodStages)
         {
             broodStages = stages; brood.Children.Clear();
-            for (int i = 0; i < colony.Nursery.Count; i++)
+            for (int i = 0; i < (completed > 0 ? localBrood.Length : 0); i++)
             {
                 double angle = i * 2.4, radius = .12 + Math.Sqrt(i) * .1;
-                var point = NestGeometry3D.ChamberPoint(1, Math.Cos(angle) * radius, Math.Sin(angle) * radius * .75);
+                var point = ChamberPoint(stratum == null ? 1 : 0, Math.Cos(angle) * radius, Math.Sin(angle) * radius * .75);
                 double x = point.X, y = point.Y;
-                brood.Children.Add(NestGeometry3D.Brood(colony.Nursery[i].Stage, x, y, NestGeometry3D.Depth(x, y) + .11));
+                brood.Children.Add(NestGeometry3D.Brood(localBrood[i].Stage, x, y, Depth(x, y) + .11));
             }
         }
-        var visible = colony.Workers.Where(a => a.State == AntState.InNest).Take(18).Select((ant, i) => (Ant: ant, Chamber: i < 2 ? 0 : i < 4 ? 1 : 3)).ToArray();
+        var visible = colony.Workers.Where(a => a.State == AntState.InNest && a.Id % nurseryLayers == Layer).Take(completed == 0 ? 0 : 18).Select((ant, i) => (Ant: ant, Chamber: stratum == null ? (i < 2 ? 0 : i < 4 ? 1 : 3) : i % completed)).ToArray();
         var ids = visible.Select(a => a.Ant.Id).ToHashSet();
         foreach (int id in workers.Keys.Where(id => !ids.Contains(id)).ToArray()) { inhabitants.Children.Remove(workers[id].Model); workers.Remove(id); }
         foreach (var entry in visible)
@@ -165,9 +222,9 @@ internal sealed class NestView : Grid
         {
             double phase = time * .45 + entry.Worker.Id * 2.399;
             double rx = .32 + entry.Worker.Id % 7 * .04, ry = .32 + entry.Worker.Id % 4 * .06;
-            var point = NestGeometry3D.ChamberPoint(entry.Chamber, Math.Sin(phase) * rx, Math.Cos(phase * .9) * ry);
+            var point = ChamberPoint(entry.Chamber, Math.Sin(phase) * rx, Math.Cos(phase * .9) * ry);
             double x = point.X, y = point.Y;
-            var tangent = NestGeometry3D.ChamberPoint(entry.Chamber, Math.Cos(phase) * rx, -.9 * Math.Sin(phase * .9) * ry) - NestGeometry3D.Centers[entry.Chamber];
+            var tangent = ChamberPoint(entry.Chamber, Math.Cos(phase) * rx, -.9 * Math.Sin(phase * .9) * ry) - (stratum == null ? NestGeometry3D.Centers[entry.Chamber] : stratum.Centers[entry.Chamber]);
             double angle = Math.Atan2(tangent.Y, tangent.X) * 180 / Math.PI;
             var pose = NestGeometry3D.AntPoses[(int)(time * 8 + entry.Worker.Id) % NestGeometry3D.AntPoses.Length];
             if (!ReferenceEquals(entry.Model.Children[0], pose)) entry.Model.Children[0] = pose;
@@ -176,14 +233,14 @@ internal sealed class NestView : Grid
         renderedTime = time;
     }
 
-    static Transform3D Placement(double x, double y, double angle, double scale)
+    Transform3D Placement(double x, double y, double angle, double scale)
     {
         return AntPainter.Frozen(new MatrixTransform3D(PlacementMatrix(x, y, angle, scale)));
     }
-    static Matrix3D PlacementMatrix(double x, double y, double angle, double scale)
+    Matrix3D PlacementMatrix(double x, double y, double angle, double scale)
     {
         double radians = angle * Math.PI / 180, c = Math.Cos(radians) * scale, s = Math.Sin(radians) * scale;
-        return new Matrix3D(c, s, 0, 0, -s, c, 0, 0, 0, 0, scale, 0, x, y, NestGeometry3D.Depth(x, y) + .08, 1);
+        return new Matrix3D(c, s, 0, 0, -s, c, 0, 0, 0, 0, scale, 0, x, y, Depth(x, y) + .08, 1);
     }
 
     void UpdateRendering()

@@ -43,7 +43,7 @@ internal static class NestGeometry3D
                 }
             }
         }
-        Carve(.3, 0, new(0, 4.55), new(.12, 3.65), new(-.7, 2.95), new(-.35, 2.1), new(.85, 1.25), new(.35, .4), new(-.8, -.5), new(-.15, -1.5), new(1, -2.6), new(.6, -3.6));
+        Carve(.3, 0, new(0, 4.55), new(.12, 3.65), new(-.7, 2.95), new(-.35, 2.1), new(.85, 1.25), new(.35, .4), new(-.8, -.5), new(-.15, -1.5), new(1, -2.6), new(.6, -3.6), new(0, -4.55));
         Carve(.25, 1.4, new(-.35, 2.1), new(-1.45, 2.75), new(-2.5, 2.3), Centers[0]);
         Carve(.23, 3.1, new(-.8, -.5), new(-1.7, -.25), new(-2.8, -1.05), Centers[1]);
         Carve(.24, 4.8, new(.85, 1.25), new(1.7, 2), new(2.8, 1.5), Centers[2]);
@@ -95,14 +95,15 @@ internal static class NestGeometry3D
         return -depth;
     }
 
-    internal static GeometryModel3D CreateTerrain()
+    internal static GeometryModel3D CreateTerrain(Func<double, double, double>? cut = null)
     {
+        cut ??= Depth;
         const int columns = 200, rows = 108;
         var mesh = new MeshGeometry3D();
         for (int j = 0; j <= rows; j++) for (int i = 0; i <= columns; i++)
         {
             double x = -8 + i * 16.0 / columns, y = -4.2 + j * 8.6 / rows;
-            double z = Depth(x, y);
+            double z = cut(x, y);
             // Small surface relief keeps both the cut earth and cave walls organic.
             z += (.022 - z * .018) * Math.Sin(x * 17 + y * 9) * Math.Cos(y * 14 - x * 5);
             mesh.Positions.Add(new Point3D(x, y, z));
@@ -114,13 +115,13 @@ internal static class NestGeometry3D
             Triangle(mesh, a, a + 1, b); Triangle(mesh, a + 1, b + 1, b);
         }
         Normals(mesh); mesh.Freeze();
-        var texture = SoilTexture();
+        var texture = SoilTexture(cut);
         var brush = new ImageBrush(texture) { ViewportUnits = BrushMappingMode.RelativeToBoundingBox };
         brush.Freeze(); var material = new DiffuseMaterial(brush); material.Freeze();
         return new GeometryModel3D(mesh, material) { BackMaterial = material };
     }
 
-    static BitmapSource SoilTexture()
+    static BitmapSource SoilTexture(Func<double, double, double> cut)
     {
         const int width = 768, height = 416;
         var pixels = new byte[width * height * 4];
@@ -129,7 +130,7 @@ internal static class NestGeometry3D
         for (int y = 0; y < height; y++) for (int x = 0; x < width; x++)
         {
             double wx = -8 + x * 16.0 / width, wy = 4.4 - y * 8.6 / height;
-            double depth = -Depth(wx, wy);
+            double depth = -cut(wx, wy);
             double grain = Noise(x, y), coarse = Noise(x / 5, y / 5);
             double layer = Math.Sin(wy * 3.7 + Math.Sin(wx * .4) * .6);
             double tone = 95 + grain * 30 + coarse * 18 + layer * 7;

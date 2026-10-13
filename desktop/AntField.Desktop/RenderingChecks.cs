@@ -12,24 +12,37 @@ namespace AntField.Desktop;
 
 internal static class RenderingChecks
 {
-    internal static void ResetConfirmation(App app)
+    internal static void LongTermObservation(App app, string output)
     {
-        var original = app.CurrentColony; var confirmation = app.ResetConfirmation;
-        var before = original.Snapshot(); int asked = 0;
-        var root = (ScrollViewer)app.CurrentPanel.Content;
-        var stack = (StackPanel)root.Content;
-        var reset = stack.Children.OfType<WrapPanel>().SelectMany(p => p.Children.OfType<Button>()).Single(b => (string)b.Content == "重建蚁群");
-        try
+        var root = (ScrollViewer)app.CurrentPanel.Content; var stack = (StackPanel)root.Content;
+        if (stack.Children.OfType<WrapPanel>().SelectMany(p => p.Children.OfType<Button>()).Any(b => ((string)b.Content).Contains("重建") || ((string)b.Content).Contains("重置")))
+            throw new InvalidOperationException("长期观察仍然提供重建蚁群入口。");
+        var colony = new DesktopColony(800, 500, 6);
+        colony.Development.Advance(96 * 3600, 48, 100, 20);
+        var restored = DesktopColony.Restore(colony.Snapshot(), 800, 500);
+        var view = new NestView(restored); view.ShowLayer(restored.Development.DeepestLayer);
+        view.Measure(new Size(860, 420)); view.Arrange(new Rect(0, 0, 860, 420)); view.UpdateLayout();
+        if (view.VisibleQueens != 0 || view.Layer <= 1) throw new InvalidOperationException("扩建巢层复制了蚁后或无法查看深层。");
+        view.ShowLayer(1); view.UpdateLayout();
+        var bitmap = new RenderTargetBitmap(860, 420, 96, 96, PixelFormats.Pbgra32); bitmap.Render(view);
+        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using (var file = File.Create(Path.Combine(output, "nest-evolved.png"))) encoder.Save(file);
+        var entranceColony = new DesktopColony(800, 500, 0); var entranceView = new OverlaySurface(entranceColony);
+        var initialEntrance = Render(entranceColony, entranceView);
+        entranceColony.Development.Advance(14 * 86400, 48, 100, 20);
+        var grownEntrance = Render(entranceColony, entranceView);
+        var before = new byte[800 * 500 * 4]; var after = new byte[before.Length];
+        initialEntrance.CopyPixels(before, 800 * 4, 0); grownEntrance.CopyPixels(after, 800 * 4, 0);
+        if (before.SequenceEqual(after)) throw new InvalidOperationException("长期发展没有改变桌面出口大小。");
+        view.ShowLayer(0); if (view.VisibleQueens != 1) throw new InvalidOperationException("唯一蚁后没有保留在主巢。");
+        for (long layer = 1; layer <= restored.Development.DeepestLayer; layer++)
         {
-            app.ResetConfirmation = _ => { asked++; return false; };
-            reset.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            var cancelled = app.CurrentColony.Snapshot();
-            if (asked != 1 || !ReferenceEquals(original, app.CurrentColony) || cancelled.Time != before.Time || cancelled.Delivered != before.Delivered || !cancelled.Workers.SequenceEqual(before.Workers)) throw new InvalidOperationException("取消重建仍然修改了游戏进度。");
-            app.ResetConfirmation = _ => { asked++; return true; };
-            reset.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            if (asked != 2 || ReferenceEquals(original, app.CurrentColony) || app.CurrentColony.Time != 0 || app.CurrentColony.Delivered != 0 || app.CurrentColony.Births != 0 || app.CurrentColony.Workers.Count != 48) throw new InvalidOperationException("确认重建后进度未正确重置。");
+            double rooms = restored.Development.RoomsInLayer(layer);
+            var geometry = new NestStratum(layer, rooms);
+            CheckConnectivity(geometry.Depth, geometry.Centers.Take((int)Math.Floor(rooms)).ToArray());
+            for (int i = 0; i < Math.Floor(rooms); i++)
+                if (geometry.Depth(geometry.Centers[i].X, geometry.Centers[i].Y) > -1) throw new InvalidOperationException("扩建巢室没有真实的 3D 深度。");
         }
-        finally { app.ResetConfirmation = confirmation; }
     }
     internal static bool NestCutaway(string output)
     {
@@ -82,11 +95,15 @@ internal static class RenderingChecks
 
     static void NestConnectivity()
     {
+        CheckConnectivity(NestGeometry3D.Depth, NestGeometry3D.Centers);
+    }
+    static void CheckConnectivity(Func<double, double, double> depth, Point[] centers)
+    {
         const int width = 201, height = 109;
         var carved = new bool[width * height]; var visited = new bool[carved.Length];
         int Cell(double x, double y) => (int)Math.Round((y + 4.2) / 8.6 * (height - 1)) * width + (int)Math.Round((x + 8) / 16 * (width - 1));
         for (int y = 0; y < height; y++) for (int x = 0; x < width; x++)
-            carved[y * width + x] = NestGeometry3D.Depth(-8 + x * 16.0 / (width - 1), -4.2 + y * 8.6 / (height - 1)) < -.08;
+            carved[y * width + x] = depth(-8 + x * 16.0 / (width - 1), -4.2 + y * 8.6 / (height - 1)) < -.08;
         int entrance = Cell(0, 4.32);
         if (!carved[entrance]) throw new InvalidOperationException("The entrance does not open into the cutaway.");
         var queue = new System.Collections.Generic.Queue<int>(); queue.Enqueue(entrance); visited[entrance] = true;
@@ -102,7 +119,7 @@ internal static class RenderingChecks
                 visited[next] = true; queue.Enqueue(next);
             }
         }
-        foreach (var center in NestGeometry3D.Centers)
+        foreach (var center in centers)
             if (!visited[Cell(center.X, center.Y)]) throw new InvalidOperationException("A nest chamber is disconnected from the entrance.");
     }
 

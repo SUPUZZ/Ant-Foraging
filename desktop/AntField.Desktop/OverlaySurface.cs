@@ -28,6 +28,7 @@ internal sealed class OverlaySurface : FrameworkElement
     Vec? drawnHome;
     string foodSignature = "";
     double trailTime = -1;
+    int drawnExitStep = -1;
     public bool ShowTrails { get => showTrails; set { if (showTrails != value) { showTrails = value; trailsDirty = true; InvalidateVisual(); } } }
     public bool ShowWalls { get => showWalls; set { if (showWalls != value) { showWalls = value; wallsDirty = true; InvalidateVisual(); } } }
     Geometry? groundClip;
@@ -69,10 +70,11 @@ internal sealed class OverlaySurface : FrameworkElement
     {
         var clip = GroundClip();
         if (!ReferenceEquals(ants.Clip, clip)) ants.Clip = clip;
-        if (drawnHome != colony.Home)
+        int exitStep = (int)Math.Floor((colony.Development.ExitScale - 1) * 1000);
+        if (drawnHome != colony.Home || drawnExitStep != exitStep)
         {
             using var dc = nest.RenderOpen();
-            NestPainter.Draw(dc, new Point(colony.Home.X, colony.Home.Y)); drawnHome = colony.Home;
+            NestPainter.Draw(dc, new Point(colony.Home.X, colony.Home.Y), colony.Development.ExitScale); drawnHome = colony.Home; drawnExitStep = exitStep;
         }
         if (wallsDirty)
         {

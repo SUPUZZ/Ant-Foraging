@@ -18,7 +18,6 @@ internal sealed class ColonyWindow : Window
     readonly Button pause;
     public Action<double>? SpeedChanged;
     public Action<bool>? TrailsChanged, WallsChanged;
-    public Action? ResetRequested;
     public Action? SaveRequested;
     public Func<string>? ProgressText, HistoryText;
     bool exiting;
@@ -41,12 +40,11 @@ internal sealed class ColonyWindow : Window
         pause = Button("暂停", togglePause); buttons.Children.Add(pause);
         buttons.Children.Add(Button("补充随机食物", () => { colony.SpawnFood(); Refresh(); }));
         buttons.Children.Add(Button("收起到桌面", Hide));
-        buttons.Children.Add(Button("重建蚁群", () => ResetRequested?.Invoke()));
         buttons.Children.Add(Button("立即保存", () => SaveRequested?.Invoke()));
         stack.Children.Add(buttons);
         var options = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };
         options.Children.Add(Slider("时间速度", .5, 4, initialSpeed, .5, value => SpeedChanged?.Invoke(value), v => $"{v:0.0}×"));
-        options.Children.Add(Slider("食物出现间隔", 5, 40, colony.SpawnInterval, 1, value => colony.SpawnInterval = value, v => $"{v:0}秒"));
+        options.Children.Add(Slider("自动食物基础间隔", 120, 600, colony.SpawnInterval, 30, value => colony.SpawnInterval = value, v => $"{v / 60:0.0}分钟"));
         stack.Children.Add(options);
         var checks = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };
         var trails = new CheckBox { Content = "显示信息素", Foreground = Foreground, Margin = new Thickness(0, 0, 24, 0) }; trails.Checked += (_, _) => TrailsChanged?.Invoke(true); trails.Unchecked += (_, _) => TrailsChanged?.Invoke(false); checks.Children.Add(trails);
@@ -54,7 +52,7 @@ internal sealed class ColonyWindow : Window
         trails.IsChecked = showTrails; walls.IsChecked = showWalls;
         records = new TextBlock { FontSize = 11, Foreground = Foreground, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 8) };
         stack.Children.Add(new Expander { Header = "历史进度记录", Foreground = Foreground, Content = records, Margin = new Thickness(0, 12, 0, 0) });
-        stack.Children.Add(new TextBlock { Text = "拖动调整切面视角 · 滚轮缩放 · 点击巢室查看详情。关闭此窗口仅收起。", FontSize = 11, Foreground = AntPainter.ColorBrush("#8fa08c"), Margin = new Thickness(0, 16, 0, 0), TextWrapping = TextWrapping.Wrap });
+        stack.Children.Add(new TextBlock { Text = "拖动调整切面视角 · 滚轮缩放 · 点击巢室查看详情。关闭此窗口仅收起。退出时保存当前蚁群，下次继续；桌面余粮充足时延后自动投食。", FontSize = 11, Foreground = AntPainter.ColorBrush("#8fa08c"), Margin = new Thickness(0, 16, 0, 0), TextWrapping = TextWrapping.Wrap });
         Content = new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         Closing += (_, e) => { if (!exiting && !App.IsExiting) { e.Cancel = true; Hide(); } };
         KeyDown += (_, e) => { if (e.Key == Key.Escape) Hide(); };
@@ -74,7 +72,7 @@ internal sealed class ColonyWindow : Window
     }
     void RefreshDetail()
     {
-        chamberDetail.Text = nestView.Selected switch {
+        chamberDetail.Text = nestView.Layer > 0 ? $"地下第 {nestView.Layer} 层：{colony.Development.RoomsInLayer(nestView.Layer):0.00} / 4 个巢室已开掘。工蚁持续延伸弯曲通道，新巢室用于休息、育幼及储粮；唯一蚁后留在主巢。" : nestView.Selected switch {
             0 => "蚁后室：蚁后由巢内工蚁照料。有足够储粮时每 40 秒产卵；缺粮会暂停育幼。",
             1 => $"育幼室：{colony.Nursery.Count} 个育幼个体。卵 → 幼虫 → 蛹 → 工蚁；阶段分别需 55 / 70 / 85 秒仿真时间，发育消耗储粮。",
             2 => $"粮仓：现有 {colony.Stored} 粒储粮，累计运回 {colony.Delivered} 粒。工蚁恢复体力、蚁后和育幼共同消耗粮食。",
@@ -85,7 +83,7 @@ internal sealed class ColonyWindow : Window
     {
         progress.Text = ProgressText?.Invoke() ?? "进度每 30 秒自动保存，退出时保存。";
         records.Text = HistoryText?.Invoke() ?? "暂无历史进度。";
-        stats.Text = $"工蚁  {colony.Workers.Count}       搬运  {colony.Carrying}       已运回  {colony.Delivered}       储粮  {colony.Stored}       育幼  {colony.Nursery.Count}       窗下  {colony.Workers.Count(a => a.State == AntState.UnderWindow)}";
+        stats.Text = $"工蚁  {colony.Workers.Count}       搬运  {colony.Carrying}       已运回  {colony.Delivered}       储粮  {colony.Stored}       育幼  {colony.Nursery.Count}       蚁后  1       扩建巢室  {colony.Development.CompletedRooms}       窗下  {colony.Workers.Count(a => a.State == AntState.UnderWindow)}";
         status.Text = $"{(isPaused() ? "已暂停" : "运行中")} · 识别到 {colony.Walls.Count} 个窗口墙 · {colony.Foods.Count} 处食物 · 工蚁在底层沿窗口墙绕行" + (colony.FoodSpaceAvailable ? "" : " · 暂无可达桌面空地，等待窗口布局改变");
         pause.Content = isPaused() ? "继续" : "暂停"; RefreshDetail(); nestView.RefreshScene();
     }

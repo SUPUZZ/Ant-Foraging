@@ -39,14 +39,6 @@ public sealed class ProgressStore(string folder)
         else if (File.Exists(PathName)) File.Replace(temporary, PathName, Path.Combine(folder, "colony.backup.json"));
         else File.Move(temporary, PathName);
     }
-    public void Reset(SavedProgress previous, SavedProgress next)
-    {
-        string history = Path.Combine(folder, "history"); Directory.CreateDirectory(history);
-        string archive = Path.Combine(history, Guid.Parse(previous.RunId).ToString("N") + ".json");
-        File.WriteAllText(archive + ".tmp", JsonSerializer.Serialize(previous));
-        File.Move(archive + ".tmp", archive, true);
-        Save(next);
-    }
     public SavedProgress[] History()
     {
         string history = Path.Combine(folder, "history");

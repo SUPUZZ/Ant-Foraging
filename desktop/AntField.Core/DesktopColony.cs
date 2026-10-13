@@ -3,7 +3,7 @@ namespace AntField.Core;
 public sealed class DesktopColony
 {
     readonly Random random;
-    double nextSpawn = 3, eggClock, metabolism;
+    double nextSpawn = 180, eggClock, metabolism;
     int foodId, workerId;
     public double Width { get; private set; }
     public double Height { get; private set; }
@@ -36,7 +36,8 @@ public sealed class DesktopColony
     public double Decay { get; set; } = .06;
     // Retained for compatibility with older saves; workers now stay on the ground.
     public double ClimbProbability { get => 0; set { } }
-    public double SpawnInterval { get; set; } = 14;
+    public double SpawnInterval { get; set; } = 180;
+    public NestDevelopment Development { get; private set; } = new();
     public int Delivered { get; private set; }
     public int Stored { get; private set; } = 12;
     public int Consumed { get; private set; }
@@ -46,17 +47,18 @@ public sealed class DesktopColony
     public bool FoodSpaceAvailable { get; private set; } = true;
     public int Carrying => Workers.Count(a => a.HasFood);
     public int Remaining => Foods.Sum(f => f.Amount);
-    public ColonySnapshot Snapshot() => new(2, Width, Height, Time, Delivered, Stored, Consumed, Spawned, Expired, Births, ClimbProbability, SpawnInterval,
+    public ColonySnapshot Snapshot() => new(3, Width, Height, Time, Delivered, Stored, Consumed, Spawned, Expired, Births, ClimbProbability, SpawnInterval,
         Workers.Select(a => new WorkerSnapshot(a.Id, a.Position.X, a.Position.Y, a.Heading, a.Distance, a.Energy, a.HasFood, a.State == AntState.InNest, a.Timer, a.FoodSourceId, a.State)).ToArray(),
-        Foods.Select(f => new FoodSnapshot(f.Id, f.Position.X, f.Position.Y, f.Amount, f.Capacity)).ToArray(), Nursery.Select(b => new BroodSnapshot(b.Stage, b.Age)).ToArray(), Screens.ToArray(), Home, (float[])Pheromones.Clone(), nextSpawn, eggClock, metabolism);
+        Foods.Select(f => new FoodSnapshot(f.Id, f.Position.X, f.Position.Y, f.Amount, f.Capacity)).ToArray(), Nursery.Select(b => new BroodSnapshot(b.Stage, b.Age)).ToArray(), Screens.ToArray(), Home, (float[])Pheromones.Clone(), nextSpawn, eggClock, metabolism, Development.WorkHours);
     public static DesktopColony Restore(ColonySnapshot saved, double width, double height)
     {
-        if (saved.Version is not (1 or 2) || !double.IsFinite(saved.Width + saved.Height + saved.Time + saved.NextSpawn + saved.EggClock + saved.Metabolism + saved.SpawnInterval) || saved.Width < 200 || saved.Height < 160 || saved.Width > 50000 || saved.Height > 50000 || saved.Workers is null || saved.Foods is null || saved.Nursery is null || saved.Workers.Length > 120 || saved.Foods.Length > 9 || saved.Nursery.Length > 18 || saved.Time < 0) throw new ArgumentException("无效的蚁群存档。");
+        if (saved.Version is not (1 or 2 or 3) || !double.IsFinite(saved.Width + saved.Height + saved.Time + saved.NextSpawn + saved.EggClock + saved.Metabolism + saved.SpawnInterval) || saved.Width < 200 || saved.Height < 160 || saved.Width > 50000 || saved.Height > 50000 || saved.Workers is null || saved.Foods is null || saved.Nursery is null || saved.Workers.Length > 120 || saved.Foods.Length > 9 || saved.Nursery.Length > 18 || saved.Time < 0) throw new ArgumentException("无效的蚁群存档。");
         var colony = new DesktopColony(width, height, 0) {
             Time = saved.Time, Delivered = Math.Max(0, saved.Delivered), Stored = Math.Max(0, saved.Stored), Consumed = Math.Max(0, saved.Consumed), Spawned = Math.Max(0, saved.Spawned), Expired = Math.Max(0, saved.Expired), Births = Math.Max(0, saved.Births),
-            ClimbProbability = Math.Clamp(saved.ClimbProbability, 0, .05), SpawnInterval = Math.Clamp(saved.SpawnInterval, 5, 40)
+            ClimbProbability = Math.Clamp(saved.ClimbProbability, 0, .05), SpawnInterval = saved.Version < 3 ? Math.Max(180, saved.SpawnInterval) : Math.Clamp(saved.SpawnInterval, 120, 600),
+            Development = new NestDevelopment(saved.NestWorkHours)
         };
-        colony.nextSpawn = Math.Max(0, saved.NextSpawn); colony.eggClock = Math.Max(0, saved.EggClock); colony.metabolism = Math.Clamp(saved.Metabolism, 0, 25);
+        colony.nextSpawn = saved.Version < 3 ? Math.Max(120, saved.NextSpawn) : Math.Max(0, saved.NextSpawn); colony.eggClock = Math.Max(0, saved.EggClock); colony.metabolism = Math.Clamp(saved.Metabolism, 0, 25);
         foreach (var ant in saved.Workers)
         {
             if (!double.IsFinite(ant.X + ant.Y + ant.Heading + ant.Energy + ant.Distance + ant.Timer)) throw new ArgumentException("无效的工蚁位置。");
@@ -239,7 +241,12 @@ public sealed class DesktopColony
     void Tick(double dt)
     {
         Time += dt; nextSpawn -= dt;
-        if (nextSpawn <= 0) { SpawnFood(); nextSpawn = Math.Max(2, SpawnInterval); }
+        if (nextSpawn <= 0)
+        {
+            // Let existing crumbs and large food sources form lasting paths.
+            if (Remaining <= 20 && Foods.Count < 2) SpawnFood();
+            nextSpawn = Math.Max(120, SpawnInterval) * (1 + random.NextDouble() * .6);
+        }
         double evaporation = Math.Exp(-Decay * dt);
         for (int i = 0; i < Pheromones.Length; i++) Pheromones[i] *= (float)evaporation;
         foreach (var ant in Workers)
@@ -337,6 +344,7 @@ public sealed class DesktopColony
             }
         }
         Foods.RemoveAll(f => f.Amount <= 0);
+        Development.Advance(dt, Workers.Count, Workers.Count == 0 ? 0 : Workers.Average(a => a.Energy), Stored);
         UpdateNursery(dt);
     }
     void UpdateCoveredWorker(Worker ant, double dt)
