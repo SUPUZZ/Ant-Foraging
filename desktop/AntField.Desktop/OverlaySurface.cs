@@ -92,17 +92,20 @@ internal sealed class OverlaySurface : FrameworkElement
             }
             trailTime = colony.Time; trailsDirty = false;
         }
-        string signature = string.Join(';', colony.Foods.Select(f => $"{f.Id}:{f.Position.X:R}:{f.Position.Y:R}:{f.Amount}"));
+        string signature = string.Join(';', colony.Foods.Select(f => $"{f.Id}:{f.Position.X:R}:{f.Position.Y:R}:{f.Amount}:{f.Capacity}"));
         if (signature != foodSignature)
         {
             using var dc = food.RenderOpen();
             foreach (var patch in colony.Foods)
-            for (int i = 0; i < Math.Min(patch.Amount, 14); i++)
             {
-                double angle = i * 2.4, radius = Math.Sqrt(i) * 2;
-                var position = new Point(patch.Position.X + Math.Cos(angle) * radius, patch.Position.Y + Math.Sin(angle) * radius);
-                dc.DrawEllipse(CrumbShadow, null, new Point(position.X + 1, position.Y + 1), 2.5, 2);
-                dc.DrawEllipse(Crumb, null, position, 2.3, 1.8);
+                if (patch.IsLarge) { FoodPainter.DrawLarge(dc, patch); continue; }
+                for (int i = 0; i < Math.Min(patch.Amount, 14); i++)
+                {
+                    double angle = i * 2.4, radius = Math.Sqrt(i) * 2;
+                    var position = new Point(patch.Position.X + Math.Cos(angle) * radius, patch.Position.Y + Math.Sin(angle) * radius);
+                    dc.DrawEllipse(CrumbShadow, null, new Point(position.X + 1, position.Y + 1), 2.5, 2);
+                    dc.DrawEllipse(Crumb, null, position, 2.3, 1.8);
+                }
             }
             foodSignature = signature;
         }

@@ -256,4 +256,94 @@ Test("Dense colonies escape fractional window corners in uniform scent without t
         Check(carrying ? delivered.All(done => done) : furthest.All(distance => distance > 60), $"Corner loop survived in layout {layout}, carrying {carrying}");
     }
 });
+Test("Occasional large morsels stay finite, fit the desktop and survive save reload", () => {
+    int largeCount = 0, smallCount = 0;
+    for (int seed = 0; seed < 30; seed++)
+    {
+        var c = new DesktopColony(1000, 700, 0, seed);
+        c.UpdateWalls([new Wall(1, 280, 150, 400, 380)]);
+        for (int i = 0; i < 9; i++) c.SpawnFood();
+        Check(c.Foods.Count(f => f.IsLarge) <= 1, "Large sources crowded out ordinary food");
+        foreach (var food in c.Foods)
+        {
+            if (food.IsLarge)
+            {
+                largeCount++;
+                Check(food.Amount is >= 160 and <= 280, "Large source has invalid supply");
+                Check(!c.Walls.Any(w => w.Contains(food.Position, 30)), "Large morsel overlaps a window");
+                Check(food.Position.X >= 30 && food.Position.Y >= 30 && food.Position.X < c.Width - 30 && food.Position.Y < c.Height - 30, "Large morsel crosses the screen edge");
+            }
+            else { smallCount++; Check(food.Amount is >= 8 and <= 19, "Ordinary crumbs changed size"); }
+        }
+        Conserved(c);
+        var snapshot = c.Snapshot();
+        var restored = DesktopColony.Restore(JsonSerializer.Deserialize<ColonySnapshot>(JsonSerializer.Serialize(snapshot))!, c.Width, c.Height);
+        Check(restored.Foods.Select(f => (f.Id, f.Amount, f.Capacity)).SequenceEqual(c.Foods.Select(f => (f.Id, f.Amount, f.Capacity))), "Reload lost source size or supply"); Conserved(restored);
+        if (c.Foods.FirstOrDefault(f => f.IsLarge) is { } large)
+        {
+            var p = large.Position;
+            c.UpdateWalls([new Wall(2, p.X + 20, p.Y - 40, 100, 80)]);
+            Check(c.Foods.All(f => f.Id != large.Id), "A window touching a large morsel left it floating over the window"); Conserved(c);
+        }
+    }
+    Check(largeCount >= 10 && smallCount > largeCount * 3, "Large sources do not appear occasionally alongside crumbs");
+    var old = new DesktopColony(800, 600, 0).Snapshot() with { Foods = [new FoodSnapshot(1, 200, 200, 12)], Spawned = 12 };
+    var legacy = DesktopColony.Restore(old, 800, 600);
+    Check(!legacy.Foods[0].IsLarge && legacy.Foods[0].Capacity == 12, "Old saves no longer restore ordinary crumbs"); Conserved(legacy);
+});
+Test("A scout repeatedly harvests a large source and maintains a real return trail", () => {
+    var original = new DesktopColony(900, 650, 1);
+    var source = original.Home + new Vec(0, -250);
+    var snapshot = original.Snapshot() with {
+        Foods = [new FoodSnapshot(999, source.X, source.Y, 200, 200)], Spawned = 200,
+        Workers = [new WorkerSnapshot(0, source.X + 22, source.Y, Math.PI, 0, 100, false, false, 0)]
+    };
+    var c = DesktopColony.Restore(snapshot, 900, 650); c.SpawnInterval = 1e9;
+    var scout = c.Workers[0]; int pickups = 0; bool carrying = false;
+    for (int tick = 0; tick < 900 && pickups < 3; tick++)
+    {
+        c.Step(.05); Conserved(c);
+        if (scout.HasFood && !carrying && scout.FoodSourceId == 999) pickups++;
+        carrying = scout.HasFood;
+    }
+    var food = c.Foods.Single(f => f.Id == 999);
+    Check(pickups >= 3 && c.Delivered >= 2 && food.Amount <= 197 && food.Amount > 0, "Scout did not establish repeated finite harvest trips");
+    Check(food.IsLarge && food.Radius < 26, "Harvested source did not shrink while remaining large");
+    int marked = Enumerable.Range(0, c.Pheromones.Length).Count(i => {
+        var p = c.Navigation.Center(i);
+        return Math.Abs(p.X - c.Home.X) < 30 && p.Y > source.Y + 30 && p.Y < c.Home.Y - 30 && c.Pheromones[i] > .15;
+    });
+    Check(marked >= 8, "Repeated carriers left no sustained path between food and nest");
+});
+Test("A discovered large source recruits multiple workers into repeated harvest trips", () => {
+    var original = new DesktopColony(900, 650, 24);
+    var source = original.Home + new Vec(0, -250);
+    var snapshot = original.Snapshot() with {
+        Foods = [new FoodSnapshot(999, source.X, source.Y, 280, 280)], Spawned = 280,
+        Workers = original.Snapshot().Workers.Select((w, i) => i == 0
+            ? w with { X = source.X, Y = source.Y, InNest = false, Timer = 0 }
+            : w with { Timer = 12 + i * .05 }).ToArray()
+    };
+    var c = DesktopColony.Restore(snapshot, 900, 650); c.SpawnInterval = 1e9;
+    var recruited = new HashSet<int>();
+    for (int tick = 0; tick < 600; tick++)
+    {
+        c.Step(.1); Conserved(c);
+        foreach (var ant in c.Workers.Where(a => a.HasFood && a.FoodSourceId == 999)) recruited.Add(ant.Id);
+    }
+    Check(recruited.Count >= 6 && c.Foods.Single(f => f.Id == 999).Amount < 260, "The source remained a lone scout's route instead of recruiting a colony");
+});
+Test("An empty worker follows a local food trail outward without knowing the source", () => {
+    var c = new DesktopColony(900, 650, 1) { SpawnInterval = 1e9 };
+    var ant = c.Workers[0]; ant.Position = c.Home + new Vec(0, -80); ant.State = AntState.Searching; ant.Heading = Math.PI / 2;
+    for (int i = 0; i < c.Pheromones.Length; i++)
+    {
+        var p = c.Navigation.Center(i);
+        if (Math.Abs(p.X - c.Home.X) < 18 && p.Y < c.Home.Y - 20 && p.Y > c.Home.Y - 270) c.Pheromones[i] = 4;
+    }
+    var start = ant.Position;
+    c.Step(2);
+    Check(ant.FoodSourceId == null && ant.Position.Y < start.Y - 45 && Math.Abs(ant.Position.X - start.X) < 35, "An empty worker followed the trail into the nest or needed a global food target");
+    Check(c.CanWalk(ant.Position) && !ant.HasFood, "Trail following left the floor or invented food");
+});
 Console.WriteLine($"{passed} desktop simulation checks passed.");

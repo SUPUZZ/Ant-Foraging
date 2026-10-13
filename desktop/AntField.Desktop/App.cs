@@ -230,6 +230,7 @@ internal sealed class App : Application
         bool hitPolicyMatchesCursor = ((style & 0x20) != 0) == outsideNest;
         var checks = new { screens = colony.Screens.Count, desktopBoundsMatch = NativeDesktop.BoundsMatch(overlayHandle, work), drawingSizeMatches = Math.Abs(surface.ActualWidth - colony.Width) < 1 && Math.Abs(surface.ActualHeight - colony.Height) < 1, windows = colony.Walls.Count, time = colony.Time, width = colony.Width, height = colony.Height, dpi = scale, transparent = overlay.AllowsTransparency, borderless = overlay.WindowStyle == WindowStyle.None, noActivate = (style & 0x08000000) != 0, hitPolicyMatchesCursor, foodOnFloor = colony.Foods.All(f => colony.CanWalk(f.Position)), workers = colony.Workers.Count, windowOcclusion = RenderingChecks.WindowOcclusion() };
         bool nestCutaway = RenderingChecks.NestCutaway(output);
+        RenderingChecks.LargeFood(output);
         File.WriteAllText(Path.Combine(output, "native-check.json"), JsonSerializer.Serialize(checks));
         File.WriteAllText(Path.Combine(output, "nest-cutaway-check.json"), JsonSerializer.Serialize(new { nestCutaway }));
         SaveFrameTiming();

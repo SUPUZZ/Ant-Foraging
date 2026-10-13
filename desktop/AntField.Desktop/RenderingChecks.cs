@@ -117,6 +117,28 @@ internal static class RenderingChecks
         if (!Visible(Render(colony, view), colony.Workers[1].Position)) throw new InvalidOperationException("恢复屏幕工作区域后工蚁仍被缓存遮挡。");
         return true;
     }
+    internal static void LargeFood(string output)
+    {
+        var colony = new DesktopColony(800, 500, 1);
+        var patch = new FoodPatch { Id = 10, Position = new Vec(200, 200), Amount = 200, Capacity = 200 };
+        colony.Foods.Add(patch);
+        colony.Foods.Add(new FoodPatch { Id = 11, Position = new Vec(310, 200), Amount = 12, Capacity = 12 });
+        var ant = colony.Workers[0]; ant.State = AntState.Searching; ant.Position = new Vec(250, 200); ant.Heading = Math.PI;
+        var view = new OverlaySurface(colony) { Width = 800, Height = 500 };
+        var full = Render(colony, view);
+        int Area(BitmapSource bitmap)
+        {
+            var pixels = new byte[64 * 64 * 4]; bitmap.CopyPixels(new Int32Rect(168, 168, 64, 64), pixels, 64 * 4, 0);
+            int count = 0; for (int i = 3; i < pixels.Length; i += 4) if (pixels[i] > 30) count++; return count;
+        }
+        int original = Area(full); patch.Amount = 10;
+        int depleted = Area(Render(colony, view));
+        if (original < 900 || depleted >= original * .6) throw new InvalidOperationException("大食物没有显示为大块食物，或搬运后未缩小。");
+        patch.Amount = 0; colony.Foods.Remove(patch);
+        if (Area(Render(colony, view)) != 0) throw new InvalidOperationException("耗尽的大食物仍有残留绘制。");
+        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(new CroppedBitmap(full, new Int32Rect(154, 152, 205, 96))));
+        using var file = File.Create(Path.Combine(output, "large-food-check.png")); encoder.Save(file);
+    }
     static void NestLayering()
     {
         // Regression: the opaque mound must not cover an ant walking across it.

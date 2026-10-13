@@ -56,12 +56,16 @@ public sealed class Worker
     public double ProgressTime { get; set; }
     public Vec? DetourTarget { get; set; }
     public double DetourUntil { get; set; }
+    public int? FoodSourceId { get; set; }
 }
 public sealed class FoodPatch
 {
     public int Id { get; init; }
     public Vec Position { get; set; }
     public int Amount { get; set; }
+    public int Capacity { get; init; }
+    [JsonIgnore] public bool IsLarge => Capacity >= 160;
+    [JsonIgnore] public double Radius => IsLarge ? 26 * (.45 + .55 * Math.Sqrt(Math.Clamp(Amount / (double)Math.Max(1, Capacity), 0, 1))) : 10;
 }
 public sealed class Brood
 {

@@ -48,7 +48,7 @@ public sealed class DesktopColony
     public int Remaining => Foods.Sum(f => f.Amount);
     public ColonySnapshot Snapshot() => new(1, Width, Height, Time, Delivered, Stored, Consumed, Spawned, Expired, Births, ClimbProbability, SpawnInterval,
         Workers.Select(a => new WorkerSnapshot(a.Id, a.Position.X, a.Position.Y, a.Heading, a.Distance, a.Energy, a.HasFood, a.State == AntState.InNest, a.Timer)).ToArray(),
-        Foods.Select(f => new FoodSnapshot(f.Id, f.Position.X, f.Position.Y, f.Amount)).ToArray(), Nursery.Select(b => new BroodSnapshot(b.Stage, b.Age)).ToArray(), Screens.ToArray(), Home);
+        Foods.Select(f => new FoodSnapshot(f.Id, f.Position.X, f.Position.Y, f.Amount, f.Capacity)).ToArray(), Nursery.Select(b => new BroodSnapshot(b.Stage, b.Age)).ToArray(), Screens.ToArray(), Home);
     public static DesktopColony Restore(ColonySnapshot saved, double width, double height)
     {
         if (saved.Version != 1 || saved.Width < 200 || saved.Height < 160 || saved.Workers.Length > 120 || saved.Foods.Length > 9 || saved.Nursery.Length > 18 || !double.IsFinite(saved.Time)) throw new ArgumentException("无效的蚁群存档。");
@@ -61,7 +61,7 @@ public sealed class DesktopColony
             if (!double.IsFinite(ant.X + ant.Y + ant.Heading + ant.Energy)) throw new ArgumentException("无效的工蚁位置。");
             colony.Workers.Add(new Worker { Id = ant.Id, Position = new(ant.X * width / saved.Width, ant.Y * height / saved.Height), Heading = ant.Heading, Distance = ant.Distance, Energy = Math.Clamp(ant.Energy, 0, 100), HasFood = ant.HasFood, State = ant.InNest ? AntState.InNest : ant.HasFood ? AntState.Returning : AntState.Searching, Timer = ant.InNest ? 2 : 0 });
         }
-        foreach (var f in saved.Foods) if (f.Amount > 0) colony.Foods.Add(new FoodPatch { Id = f.Id, Position = new(f.X * width / saved.Width, f.Y * height / saved.Height), Amount = f.Amount });
+        foreach (var f in saved.Foods) if (f.Amount > 0) colony.Foods.Add(new FoodPatch { Id = f.Id, Position = new(f.X * width / saved.Width, f.Y * height / saved.Height), Amount = f.Amount, Capacity = Math.Max(f.Amount, f.Capacity) });
         colony.Nursery.Clear();
         foreach (var brood in saved.Nursery) colony.Nursery.Add(new Brood { Stage = brood.Stage, Age = Math.Max(0, brood.Age) });
         colony.workerId = colony.Workers.Count == 0 ? 0 : colony.Workers.Max(a => a.Id) + 1;
@@ -81,7 +81,7 @@ public sealed class DesktopColony
     public bool IsNestApron(Vec p) => Math.Abs(p.X - Home.X) < 48 && p.Y > Home.Y - 24 && p.Y < Home.Y + 24;
     public bool Free(Vec p) => p.X >= 7 && p.X < Width - 7 && p.Y >= 7 && p.Y < Height - 7 && OnScreen(p) && (IsNestApron(p) || !Walls.Any(w => w.Contains(p, 7)));
     public bool CanWalk(Vec p) => Free(p) && Navigation.Reachable(p);
-    bool FoodSpace(Vec p) => (FoodAreas.Count == 0 || FoodAreas.Any(s => s.Contains(p, -14))) && CanWalk(p) && (p - Home).Length > 100 && !Walls.Any(w => w.Contains(p, 14)) && p.X >= 14 && p.Y >= 14 && p.X < Width - 14 && p.Y < Height - 14;
+    bool FoodSpace(Vec p, double margin = 14) => (FoodAreas.Count == 0 || FoodAreas.Any(s => s.Contains(p, -margin))) && CanWalk(p) && (p - Home).Length > 100 && !Walls.Any(w => w.Contains(p, margin)) && p.X >= margin && p.Y >= margin && p.X < Width - margin && p.Y < Height - margin;
     bool GroundClear(Vec a, Vec b)
     {
         if (!Free(a) || !Free(b)) return false;
@@ -120,7 +120,7 @@ public sealed class DesktopColony
     }
     void ResolveChanges()
     {
-        foreach (var food in Foods.Where(f => !FoodSpace(f.Position))) { Expired += food.Amount; food.Amount = 0; }
+        foreach (var food in Foods.Where(f => !FoodSpace(f.Position, f.IsLarge ? 30 : 14))) { Expired += food.Amount; food.Amount = 0; }
         Foods.RemoveAll(f => f.Amount <= 0);
         foreach (var ant in Workers)
         {
@@ -140,14 +140,18 @@ public sealed class DesktopColony
     public bool SpawnFood()
     {
         if (Foods.Count >= 9) return false;
-        var candidates = Enumerable.Range(0, Navigation.Floor.Length).Where(i => FoodSpace(Navigation.Center(i))).ToArray();
+        bool large = !Foods.Any(f => f.IsLarge) && random.NextDouble() < .2;
+        var candidates = Enumerable.Range(0, Navigation.Floor.Length).Where(i => FoodSpace(Navigation.Center(i), large ? 30 : 14)).ToArray();
+        // A narrow desktop strip may fit crumbs but not a large morsel.
+        if (large && candidates.Length == 0) { large = false; candidates = Enumerable.Range(0, Navigation.Floor.Length).Where(i => FoodSpace(Navigation.Center(i))).ToArray(); }
         FoodSpaceAvailable = candidates.Length > 0;
         if (!FoodSpaceAvailable) return false;
         for (int attempt = 0; attempt < 80; attempt++)
         {
             var point = Navigation.Center(candidates[random.Next(candidates.Length)]);
             if (Foods.Any(f => (f.Position - point).Length < 65)) continue;
-            int amount = 8 + random.Next(12); Foods.Add(new FoodPatch { Id = foodId++, Position = point, Amount = amount }); Spawned += amount; return true;
+            int amount = large ? 160 + random.Next(121) : 8 + random.Next(12);
+            Foods.Add(new FoodPatch { Id = foodId++, Position = point, Amount = amount, Capacity = amount }); Spawned += amount; return true;
         }
         return false;
     }
@@ -206,6 +210,25 @@ public sealed class DesktopColony
     }
 
     static double Angle(double a) => Math.Atan2(Math.Sin(a), Math.Cos(a));
+    double? OutboundTrailTurn(Worker ant)
+    {
+        int current = Navigation.Index(ant.Position);
+        if (current < 0 || Navigation.HomeDistance[current] < 0) return null;
+        double min = double.MaxValue, max = 0, best = 0; Vec? target = null;
+        for (int k = 0; k < 16; k++)
+        {
+            var point = ant.Position + Vec.Direction(ant.Heading + k * Math.PI / 8) * 24;
+            if (!CanWalk(point) || !Navigation.Clear(ant.Position, point)) continue;
+            double scent = (Scent(point) + Scent(ant.Position + (point - ant.Position) * .5)) * .5;
+            min = Math.Min(min, scent); max = Math.Max(max, scent);
+            int cell = Navigation.Index(point);
+            if (cell < 0 || Navigation.HomeDistance[cell] <= Navigation.HomeDistance[current] || scent < .15) continue;
+            double score = scent * (1 + .2 * Math.Cos((point - ant.Position).Angle - ant.Heading));
+            if (score > best) { best = score; target = point; }
+        }
+        // A uniform field supplies no route and must not revive corner loops.
+        return target is Vec next && max - min > .05 ? Angle((next - ant.Position).Angle - ant.Heading) * 4 : null;
+    }
     void Tick(double dt)
     {
         Time += dt; nextSpawn -= dt;
@@ -219,7 +242,13 @@ public sealed class DesktopColony
             {
                 ant.ProgressOrigin = null; ant.DetourTarget = null;
                 ant.Position = Home; ant.Timer -= dt; ant.Energy = Math.Min(100, ant.Energy + dt * 18);
-                if (ant.Timer <= 0 && ant.Energy > 60) { ant.State = AntState.Searching; ant.Heading = -Math.PI * random.NextDouble(); }
+                if (ant.Timer <= 0 && ant.Energy > 60)
+                {
+                    ant.State = AntState.Searching;
+                    var source = Foods.FirstOrDefault(f => f.Id == ant.FoodSourceId && f.Amount > 0);
+                    if (source == null) ant.FoodSourceId = null;
+                    ant.Heading = source != null ? (source.Position - Home).Angle + (random.NextDouble() - .5) * .2 : -Math.PI * random.NextDouble();
+                }
                 continue;
             }
             if (ant.State is AntState.Climbing or AntState.OnWindow or AntState.Descending)
@@ -238,7 +267,7 @@ public sealed class DesktopColony
                 var near = Foods.Where(f => f.Amount > 0 && (f.Position - ant.Position).Length < 95 && Navigation.Clear(ant.Position, f.Position)).OrderBy(f => (f.Position - ant.Position).Length).FirstOrDefault();
                 if (near != null)
                 {
-                    if ((near.Position - ant.Position).Length < 12) { near.Amount--; ant.HasFood = true; ant.State = AntState.Returning; ant.ReturnTarget = null; ant.Heading += Math.PI; }
+                    if ((near.Position - ant.Position).Length < (near.IsLarge ? near.Radius + 3 : 12)) { near.Amount--; ant.FoodSourceId = near.Id; ant.HasFood = true; ant.State = AntState.Returning; ant.ReturnTarget = null; ant.Heading += Math.PI; }
                     else ant.Turn = Angle((near.Position - ant.Position).Angle - ant.Heading) * 4;
                 }
                 else
@@ -252,7 +281,7 @@ public sealed class DesktopColony
                         double signal = Navigation.Clear(ant.Position, sample) ? Scent(sample) : 0;
                         if (signal > best && random.NextDouble() > .12) { best = signal; turn = offset * 4; }
                     }
-                    ant.Turn = turn;
+                    ant.Turn = OutboundTrailTurn(ant) ?? turn;
                 }
             }
             if (ant.State == AntState.Returning)
