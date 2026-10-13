@@ -46,20 +46,22 @@ public sealed class DesktopColony
     public bool FoodSpaceAvailable { get; private set; } = true;
     public int Carrying => Workers.Count(a => a.HasFood);
     public int Remaining => Foods.Sum(f => f.Amount);
-    public ColonySnapshot Snapshot() => new(1, Width, Height, Time, Delivered, Stored, Consumed, Spawned, Expired, Births, ClimbProbability, SpawnInterval,
-        Workers.Select(a => new WorkerSnapshot(a.Id, a.Position.X, a.Position.Y, a.Heading, a.Distance, a.Energy, a.HasFood, a.State == AntState.InNest, a.Timer)).ToArray(),
-        Foods.Select(f => new FoodSnapshot(f.Id, f.Position.X, f.Position.Y, f.Amount, f.Capacity)).ToArray(), Nursery.Select(b => new BroodSnapshot(b.Stage, b.Age)).ToArray(), Screens.ToArray(), Home);
+    public ColonySnapshot Snapshot() => new(2, Width, Height, Time, Delivered, Stored, Consumed, Spawned, Expired, Births, ClimbProbability, SpawnInterval,
+        Workers.Select(a => new WorkerSnapshot(a.Id, a.Position.X, a.Position.Y, a.Heading, a.Distance, a.Energy, a.HasFood, a.State == AntState.InNest, a.Timer, a.FoodSourceId, a.State)).ToArray(),
+        Foods.Select(f => new FoodSnapshot(f.Id, f.Position.X, f.Position.Y, f.Amount, f.Capacity)).ToArray(), Nursery.Select(b => new BroodSnapshot(b.Stage, b.Age)).ToArray(), Screens.ToArray(), Home, (float[])Pheromones.Clone(), nextSpawn, eggClock, metabolism);
     public static DesktopColony Restore(ColonySnapshot saved, double width, double height)
     {
-        if (saved.Version != 1 || saved.Width < 200 || saved.Height < 160 || saved.Workers.Length > 120 || saved.Foods.Length > 9 || saved.Nursery.Length > 18 || !double.IsFinite(saved.Time)) throw new ArgumentException("无效的蚁群存档。");
+        if (saved.Version is not (1 or 2) || !double.IsFinite(saved.Width + saved.Height + saved.Time + saved.NextSpawn + saved.EggClock + saved.Metabolism + saved.SpawnInterval) || saved.Width < 200 || saved.Height < 160 || saved.Width > 50000 || saved.Height > 50000 || saved.Workers is null || saved.Foods is null || saved.Nursery is null || saved.Workers.Length > 120 || saved.Foods.Length > 9 || saved.Nursery.Length > 18 || saved.Time < 0) throw new ArgumentException("无效的蚁群存档。");
         var colony = new DesktopColony(width, height, 0) {
             Time = saved.Time, Delivered = Math.Max(0, saved.Delivered), Stored = Math.Max(0, saved.Stored), Consumed = Math.Max(0, saved.Consumed), Spawned = Math.Max(0, saved.Spawned), Expired = Math.Max(0, saved.Expired), Births = Math.Max(0, saved.Births),
             ClimbProbability = Math.Clamp(saved.ClimbProbability, 0, .05), SpawnInterval = Math.Clamp(saved.SpawnInterval, 5, 40)
         };
+        colony.nextSpawn = Math.Max(0, saved.NextSpawn); colony.eggClock = Math.Max(0, saved.EggClock); colony.metabolism = Math.Clamp(saved.Metabolism, 0, 25);
         foreach (var ant in saved.Workers)
         {
-            if (!double.IsFinite(ant.X + ant.Y + ant.Heading + ant.Energy)) throw new ArgumentException("无效的工蚁位置。");
-            colony.Workers.Add(new Worker { Id = ant.Id, Position = new(ant.X * width / saved.Width, ant.Y * height / saved.Height), Heading = ant.Heading, Distance = ant.Distance, Energy = Math.Clamp(ant.Energy, 0, 100), HasFood = ant.HasFood, State = ant.InNest ? AntState.InNest : ant.HasFood ? AntState.Returning : AntState.Searching, Timer = ant.InNest ? 2 : 0 });
+            if (!double.IsFinite(ant.X + ant.Y + ant.Heading + ant.Energy + ant.Distance + ant.Timer)) throw new ArgumentException("无效的工蚁位置。");
+            var state = ant.InNest ? AntState.InNest : ant.State is AntState.Returning || ant.HasFood ? AntState.Returning : AntState.Searching;
+            colony.Workers.Add(new Worker { Id = ant.Id, Position = new(ant.X * width / saved.Width, ant.Y * height / saved.Height), Heading = ant.Heading, Distance = Math.Max(0, ant.Distance), Energy = Math.Clamp(ant.Energy, 0, 100), HasFood = ant.HasFood, State = state, Timer = ant.InNest ? Math.Max(0, ant.Timer) : 0, FoodSourceId = ant.FoodSourceId });
         }
         foreach (var f in saved.Foods) if (f.Amount > 0) colony.Foods.Add(new FoodPatch { Id = f.Id, Position = new(f.X * width / saved.Width, f.Y * height / saved.Height), Amount = f.Amount, Capacity = Math.Max(f.Amount, f.Capacity) });
         colony.Nursery.Clear();
@@ -68,6 +70,11 @@ public sealed class DesktopColony
         colony.foodId = colony.Foods.Count == 0 ? 0 : colony.Foods.Max(f => f.Id) + 1;
         if (saved.Screens is { Length: > 0 } screens && saved.Home is Vec nest)
             colony.ConfigureScreens(width, height, screens.Select(s => new Wall(s.Id, s.X * width / saved.Width, s.Y * height / saved.Height, s.Width * width / saved.Width, s.Height * height / saved.Height)), new Vec(nest.X * width / saved.Width, nest.Y * height / saved.Height));
+        if (saved.Pheromones is { } trail && width == saved.Width && height == saved.Height && trail.Length == colony.Pheromones.Length)
+        {
+            if (trail.Any(v => !float.IsFinite(v) || v < 0)) throw new ArgumentException("无效的气味路径。");
+            for (int i = 0; i < trail.Length; i++) if (colony.Navigation.HomeDistance[i] >= 0) colony.Pheromones[i] = Math.Min(24, trail[i]);
+        }
         colony.ResolveChanges(); return colony;
     }
     public DesktopColony(double width, double height, int count = 48, int seed = 42)

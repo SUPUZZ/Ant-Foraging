@@ -38,6 +38,13 @@ internal sealed class App : Application
     Task pendingSave = Task.CompletedTask;
     readonly List<double> frameIntervals = new();
     readonly string stateFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AntField");
+    ProgressStore progressStore = null!;
+    string runId = Guid.NewGuid().ToString("N"), saveStatus = "尚未保存", historyText = "暂无历史进度。";
+    bool restoredProgress, resetPending;
+    SavedProgress? loadedProgress;
+    internal Func<Window, bool> ResetConfirmation { get; set; } = owner => System.Windows.MessageBox.Show(owner, "重建蚁群会重置当前游戏进度，包括工蚁、储粮、食物、育幼和觅食路径。\n\n重建前的进度会保存为历史记录。确定要重建吗？", "重建蚁群", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes;
+    internal DesktopColony CurrentColony => colony;
+    internal ColonyWindow CurrentPanel => panel;
     Mutex? singleInstance;
     [STAThread]
     public static void Main(string[] args)
@@ -58,10 +65,15 @@ internal sealed class App : Application
         base.OnStartup(e); work = NativeDesktop.WorkArea();
         var initial = SystemParameters.WorkArea;
         colony = new DesktopColony(initial.Width, initial.Height, frameTest ? 120 : 48);
+        progressStore = new ProgressStore(stateFolder);
         if (!smoke)
         {
-            try { var saved = JsonSerializer.Deserialize<ColonySnapshot>(File.ReadAllText(Path.Combine(stateFolder, "colony.json"))); if (saved != null)
+            loadedProgress = progressStore.Load();
+            if (loadedProgress != null)
                 {
+                    var saved = loadedProgress.Colony; restoredProgress = true; runId = loadedProgress.RunId;
+                    speed = loadedProgress.Speed; paused = loadedProgress.Paused;
+                    saveStatus = $"{(progressStore.RecoveredBackup ? "已恢复备份" : "已恢复进度")} · {loadedProgress.SavedAt.ToLocalTime():MM-dd HH:mm:ss}";
                     bool multi = saved.Screens is { Length: > 0 } && saved.Home != null;
                     colony = DesktopColony.Restore(saved, multi ? saved.Width : initial.Width, multi ? saved.Height : initial.Height);
                     if (multi)
@@ -70,10 +82,11 @@ internal sealed class App : Application
                         work.Left = (int)Math.Round((work.Left + work.Right) / 2.0 - colony.Home.X * initialScale);
                         work.Top = (int)Math.Round(work.Bottom - (colony.Home.Y + 24) * initialScale);
                     }
-                } }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException or NullReferenceException) { /* A missing or damaged save starts a fresh colony. */ }
+                }
+            else if (progressStore.LoadFailed) saveStatus = "存档和备份无法读取，已启动新蚁群";
+            RefreshHistory();
         }
-        surface = new OverlaySurface(colony);
+        surface = new OverlaySurface(colony) { ShowTrails = loadedProgress?.ShowTrails ?? false, ShowWalls = loadedProgress?.ShowWalls ?? false };
         overlay = new Window { Title = "桌面蚁境 · 透明桌面层", WindowStyle = WindowStyle.None, AllowsTransparency = true, Background = Brushes.Transparent, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false, ShowActivated = false, Topmost = true, Left = initial.Left, Top = initial.Top, Width = initial.Width, Height = initial.Height, Content = surface };
         overlay.SourceInitialized += (_, _) => {
             overlayHandle = new WindowInteropHelper(overlay).Handle; scale = NativeDesktop.DpiScale(overlay); UpdateBounds(); NativeDesktop.ClickThrough(overlayHandle, true);
@@ -86,7 +99,8 @@ internal sealed class App : Application
         overlay.Icon = BitmapFrame.Create(IconUri);
         overlay.Show();
         CreatePanel(); CreateTray();
-        ScanWindows(); for (int i = 0; i < 5; i++) colony.SpawnFood();
+        ScanWindows(); if (!restoredProgress) for (int i = 0; i < 5; i++) colony.SpawnFood();
+        if (!smoke && !restoredProgress && !progressStore.LoadFailed) Save(true);
         clock.Start();
         CompositionTarget.Rendering += RenderFrame;
         maintenanceClock.Start();
@@ -102,11 +116,15 @@ internal sealed class App : Application
     }
     void CreatePanel()
     {
-        panel = new ColonyWindow(colony, () => paused, TogglePause);
+        panel = new ColonyWindow(colony, () => paused, TogglePause, speed, surface.ShowTrails, surface.ShowWalls);
         panel.SpeedChanged = value => speed = value;
         panel.TrailsChanged = value => surface.ShowTrails = value;
         panel.WallsChanged = value => surface.ShowWalls = value;
         panel.ResetRequested = Reset;
+        panel.SaveRequested = () => Save(true);
+        panel.ProgressText = () => $"累计仿真时间 {TimeSpan.FromSeconds(colony.Time):d\\天\\ hh\\:mm\\:ss} · 累计羽化 {colony.Births} 只 · {saveStatus}";
+        panel.HistoryText = () => historyText;
+        panel.Refresh();
     }
     void CreateTray()
     {
@@ -122,7 +140,7 @@ internal sealed class App : Application
         tray.ContextMenuStrip = menu; tray.MouseClick += (_, args) => { if (args.Button == Forms.MouseButtons.Left) Dispatcher.Invoke(OpenPanel); };
     }
     void OpenPanel() { panel.Show(); panel.Activate(); panel.Refresh(); }
-    void TogglePause() { paused = !paused; clock.Restart(); panel.Refresh(); surface.InvalidateVisual(); }
+    void TogglePause() { if (resetPending) return; paused = !paused; clock.Restart(); panel.Refresh(); surface.InvalidateVisual(); }
     void UpdateBounds()
     {
         var areas = NativeDesktop.WorkAreas(true);
@@ -189,33 +207,67 @@ internal sealed class App : Application
         // Keep the colony alive when no visible WPF window produces frames.
         if (!overlay.IsVisible && !panel.IsVisible && clock.Elapsed.TotalSeconds >= .1) AdvanceFrame();
         if (refreshClock > .2) { if (panel.IsVisible) panel.Refresh(); refreshClock = 0; }
-        if (saveClock > 30 && !smoke) { Save(true); saveClock = 0; }
+        if (saveClock > 30 && !smoke && !resetPending) { Save(true); saveClock = 0; }
     }
     void Reset()
     {
+        if (resetPending) return;
+        resetPending = true; bool wasPaused = paused; paused = true; panel.Refresh();
+        try
+        {
+        if (!ResetConfirmation(panel)) { paused = wasPaused; return; }
+        pendingSave.GetAwaiter().GetResult();
         var screens = colony.Screens; var nest = colony.Home;
-        colony = new DesktopColony(overlay.Width, overlay.Height);
-        colony.ConfigureScreens(overlay.Width, overlay.Height, screens, nest);
+        var nextColony = new DesktopColony(overlay.Width, overlay.Height) { FoodAreas = colony.FoodAreas };
+        nextColony.ConfigureScreens(overlay.Width, overlay.Height, screens, nest); nextColony.UpdateWalls(colony.Walls);
+        for (int i = 0; i < 5; i++) nextColony.SpawnFood();
+        var next = new SavedProgress(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, nextColony.Snapshot(), 1, false, surface.ShowTrails, surface.ShowWalls);
+        if (!smoke)
+        {
+            try { progressStore.Reset(CaptureProgress() with { Paused = wasPaused }, next); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { paused = wasPaused; saveStatus = "重建取消：进度保存失败"; System.Windows.MessageBox.Show(panel, "无法保存当前进度，尚未重建蚁群。请检查存储空间和文件权限后重试。", "保存失败", MessageBoxButton.OK, MessageBoxImage.Error); return; }
+        }
+        colony = nextColony; runId = next.RunId; speed = 1; saveClock = 0;
+        saveStatus = "新进度已保存"; if (!smoke) RefreshHistory();
         surface = new OverlaySurface(colony) { ShowTrails = surface.ShowTrails, ShowWalls = surface.ShowWalls };
         overlay.Content = surface; surface.MouseLeftButtonDown += (_, args) => { if (surface.NestHitBox.Contains(args.GetPosition(surface))) OpenPanel(); };
-        ScanWindows(); for (int i = 0; i < 5; i++) colony.SpawnFood();
+        ScanWindows();
         panel.Hide(); IsExiting = true; panel.Close(); IsExiting = false;
-        CreatePanel(); OpenPanel(); speed = 1;
+        CreatePanel(); if (smoke) { panel.ShowActivated = false; panel.Show(); } else OpenPanel();
+        paused = false;
+        }
+        finally { resetPending = false; clock.Restart(); panel.Refresh(); }
+    }
+    SavedProgress CaptureProgress() => new(runId, DateTimeOffset.UtcNow, colony.Snapshot(), speed, paused, surface.ShowTrails, surface.ShowWalls);
+    void RefreshHistory()
+    {
+        try
+        {
+            var records = progressStore.History();
+            historyText = records.Length == 0 ? "暂无历史进度。重建前的进度会保留在这里。" : string.Join("\n", records.Select(r => $"{r.SavedAt.ToLocalTime():yyyy-MM-dd HH:mm} · 累计 {TimeSpan.FromSeconds(r.Colony.Time).TotalMinutes:0.0} 分钟 · 工蚁 {r.Colony.Workers.Length} · 运回 {r.Colony.Delivered} · 羽化 {r.Colony.Births}"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { historyText = "暂时无法读取历史记录。"; }
     }
     void Save(bool background = false)
     {
+        if (smoke) return;
         if (background && !pendingSave.IsCompleted) return;
         if (!background) pendingSave.GetAwaiter().GetResult();
-        var snapshot = colony.Snapshot();
-        if (background) pendingSave = Task.Run(() => WriteSnapshot(snapshot));
-        else WriteSnapshot(snapshot);
+        var snapshot = CaptureProgress();
+        if (background)
+        {
+            saveStatus = "正在保存…";
+            pendingSave = Task.Run(() => {
+                bool saved = WriteSnapshot(snapshot);
+                if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(new Action(() => { if (runId == snapshot.RunId) { saveStatus = saved ? $"已保存 · {snapshot.SavedAt.ToLocalTime():HH:mm:ss}" : "保存失败，请重试"; panel.Refresh(); } }));
+            });
+        }
+        else if (!WriteSnapshot(snapshot)) System.Windows.MessageBox.Show("退出前保存失败，请检查存储空间和文件权限。上一次成功保存的进度仍然保留。", "保存失败", MessageBoxButton.OK, MessageBoxImage.Error);
     }
-    void WriteSnapshot(ColonySnapshot snapshot)
+    bool WriteSnapshot(SavedProgress snapshot)
     {
-        try {
-            Directory.CreateDirectory(stateFolder); string target = Path.Combine(stateFolder, "colony.json"), temporary = target + ".tmp";
-            File.WriteAllText(temporary, JsonSerializer.Serialize(snapshot)); File.Move(temporary, target, true);
-        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* Simulation continues if the local save is unavailable. */ }
+        try { progressStore.Save(snapshot); return true; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
     }
     void SaveSmoke()
     {
@@ -231,6 +283,7 @@ internal sealed class App : Application
         var checks = new { screens = colony.Screens.Count, desktopBoundsMatch = NativeDesktop.BoundsMatch(overlayHandle, work), drawingSizeMatches = Math.Abs(surface.ActualWidth - colony.Width) < 1 && Math.Abs(surface.ActualHeight - colony.Height) < 1, windows = colony.Walls.Count, time = colony.Time, width = colony.Width, height = colony.Height, dpi = scale, transparent = overlay.AllowsTransparency, borderless = overlay.WindowStyle == WindowStyle.None, noActivate = (style & 0x08000000) != 0, hitPolicyMatchesCursor, foodOnFloor = colony.Foods.All(f => colony.CanWalk(f.Position)), workers = colony.Workers.Count, windowOcclusion = RenderingChecks.WindowOcclusion() };
         bool nestCutaway = RenderingChecks.NestCutaway(output);
         RenderingChecks.LargeFood(output);
+        RenderingChecks.ResetConfirmation(this);
         File.WriteAllText(Path.Combine(output, "native-check.json"), JsonSerializer.Serialize(checks));
         File.WriteAllText(Path.Combine(output, "nest-cutaway-check.json"), JsonSerializer.Serialize(new { nestCutaway }));
         SaveFrameTiming();

@@ -346,4 +346,57 @@ Test("An empty worker follows a local food trail outward without knowing the sou
     Check(ant.FoodSourceId == null && ant.Position.Y < start.Y - 45 && Math.Abs(ant.Position.X - start.X) < 35, "An empty worker followed the trail into the nest or needed a global food target");
     Check(c.CanWalk(ant.Position) && !ant.HasFood, "Trail following left the floor or invented food");
 });
+Test("Progress restores trails, food memory, fatigue and colony clocks", () => {
+    var c = new DesktopColony(900, 650, 3); c.Step(18.25);
+    c.Workers[0].State = AntState.InNest; c.Workers[0].Timer = 7.25; c.Workers[0].FoodSourceId = c.Foods[0].Id;
+    c.Workers[1].State = AntState.Returning; c.Workers[1].HasFood = false; c.Workers[1].Energy = 18;
+    for (int i = 0; i < c.Pheromones.Length; i++) if (c.Navigation.HomeDistance[i] >= 0) c.Pheromones[i] = (i % 13) / 2f;
+    var saved = JsonSerializer.Deserialize<ColonySnapshot>(JsonSerializer.Serialize(c.Snapshot()))!;
+    var restored = DesktopColony.Restore(saved, c.Width, c.Height); var after = restored.Snapshot();
+    Check(after.Time == saved.Time && after.Delivered == saved.Delivered && after.Births == saved.Births && after.Stored == saved.Stored && after.Consumed == saved.Consumed, "Cumulative progress was lost");
+    Check(after.NextSpawn == saved.NextSpawn && after.EggClock == saved.EggClock && after.Metabolism == saved.Metabolism, "Colony timers restarted");
+    Check(restored.Workers[0].Timer == 7.25 && restored.Workers[0].FoodSourceId == c.Workers[0].FoodSourceId, "Rest or food-source memory restarted");
+    Check(restored.Workers[1].State == AntState.Returning && restored.Workers[1].Energy == 18, "Fatigue return state was lost");
+    Check(restored.Pheromones.SequenceEqual(c.Pheromones), "Saved paths disappeared");
+    var resized = DesktopColony.Restore(saved, 1100, 750); Check(resized.Pheromones.All(v => v == 0), "Resizing pasted trails into unrelated cells");
+    var old = saved with { Version = 1, Pheromones = null }; Check(DesktopColony.Restore(old, c.Width, c.Height).Time == c.Time, "Legacy progress no longer loads");
+});
+Test("Progress files migrate legacy saves, recover backups and archive resets", () => {
+    string folder = Path.Combine(Path.GetTempPath(), "AntField-progress-test-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        var store = new ProgressStore(folder); Check(store.Load() == null && !store.LoadFailed, "A new player was marked as corrupted");
+        Directory.CreateDirectory(folder);
+        var colony = new DesktopColony(900, 650); colony.Step(17);
+        File.WriteAllText(store.PathName, JsonSerializer.Serialize(colony.Snapshot() with { Version = 1 }));
+        var legacy = store.Load()!; Check(legacy.Colony.Time == colony.Time, "Existing save was not migrated");
+        var first = legacy with { SavedAt = DateTimeOffset.UtcNow, Speed = 2, Paused = true, ShowTrails = true };
+        store.Save(first); colony.Step(10);
+        var second = first with { SavedAt = first.SavedAt.AddSeconds(10), Colony = colony.Snapshot() }; store.Save(second);
+        Check(store.Load() == second || JsonSerializer.Serialize(store.Load()) == JsonSerializer.Serialize(second), "Progress or preferences failed to round-trip");
+        File.WriteAllText(store.PathName, "broken");
+        var recovered = store.Load()!; Check(store.RecoveredBackup && recovered.Colony.Time == first.Colony.Time && recovered.RunId == first.RunId, "Corruption discarded the available backup");
+        store.Save(second);
+        var next = new SavedProgress(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, new DesktopColony(900, 650).Snapshot());
+        store.Reset(second, next);
+        Check(store.Load()!.RunId == next.RunId && store.Load()!.Colony.Time == 0, "Reset failed to persist the new run immediately");
+        var history = store.History(); Check(history.Length == 1 && history[0].RunId == second.RunId && history[0].Colony.Time == second.Colony.Time, "Reset erased the previous run instead of recording it");
+        Conserved(DesktopColony.Restore(history[0].Colony, 900, 650));
+    }
+    finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+});
+Test("Failed reset persistence keeps the active progress intact", () => {
+    string folder = Path.Combine(Path.GetTempPath(), "AntField-progress-failure-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        var store = new ProgressStore(folder); var c = new DesktopColony(900, 650); c.Step(13);
+        var previous = new SavedProgress(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, c.Snapshot()); store.Save(previous);
+        File.WriteAllText(Path.Combine(folder, "history"), "blocked-directory");
+        bool failed = false;
+        try { store.Reset(previous, previous with { RunId = Guid.NewGuid().ToString("N"), Colony = new DesktopColony(900, 650).Snapshot() }); }
+        catch (IOException) { failed = true; }
+        Check(failed && store.Load()!.RunId == previous.RunId && store.Load()!.Colony.Time == previous.Colony.Time, "A failed reset overwrote active progress");
+    }
+    finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+});
 Console.WriteLine($"{passed} desktop simulation checks passed.");

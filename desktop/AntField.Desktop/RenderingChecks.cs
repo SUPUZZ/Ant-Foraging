@@ -12,6 +12,25 @@ namespace AntField.Desktop;
 
 internal static class RenderingChecks
 {
+    internal static void ResetConfirmation(App app)
+    {
+        var original = app.CurrentColony; var confirmation = app.ResetConfirmation;
+        var before = original.Snapshot(); int asked = 0;
+        var root = (ScrollViewer)app.CurrentPanel.Content;
+        var stack = (StackPanel)root.Content;
+        var reset = stack.Children.OfType<WrapPanel>().SelectMany(p => p.Children.OfType<Button>()).Single(b => (string)b.Content == "重建蚁群");
+        try
+        {
+            app.ResetConfirmation = _ => { asked++; return false; };
+            reset.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var cancelled = app.CurrentColony.Snapshot();
+            if (asked != 1 || !ReferenceEquals(original, app.CurrentColony) || cancelled.Time != before.Time || cancelled.Delivered != before.Delivered || !cancelled.Workers.SequenceEqual(before.Workers)) throw new InvalidOperationException("取消重建仍然修改了游戏进度。");
+            app.ResetConfirmation = _ => { asked++; return true; };
+            reset.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            if (asked != 2 || ReferenceEquals(original, app.CurrentColony) || app.CurrentColony.Time != 0 || app.CurrentColony.Delivered != 0 || app.CurrentColony.Births != 0 || app.CurrentColony.Workers.Count != 48) throw new InvalidOperationException("确认重建后进度未正确重置。");
+        }
+        finally { app.ResetConfirmation = confirmation; }
+    }
     internal static bool NestCutaway(string output)
     {
         NestConnectivity();
