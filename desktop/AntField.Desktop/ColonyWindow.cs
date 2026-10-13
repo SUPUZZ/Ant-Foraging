@@ -84,7 +84,7 @@ internal sealed class ColonyWindow : Window
         progress.Text = ProgressText?.Invoke() ?? "进度每 30 秒自动保存，退出时保存。";
         records.Text = HistoryText?.Invoke() ?? "暂无历史进度。";
         stats.Text = $"工蚁  {colony.Workers.Count}       搬运  {colony.Carrying}       已运回  {colony.Delivered}       储粮  {colony.Stored}       育幼  {colony.Nursery.Count}       蚁后  1       扩建巢室  {colony.Development.CompletedRooms}       窗下  {colony.Workers.Count(a => a.State == AntState.UnderWindow)}";
-        status.Text = $"{(isPaused() ? "已暂停" : "运行中")} · 识别到 {colony.Walls.Count} 个窗口墙 · {colony.Foods.Count} 处食物 · 工蚁在底层沿窗口墙绕行" + (colony.FoodSpaceAvailable ? "" : " · 暂无可达桌面空地，等待窗口布局改变");
+        status.Text = $"{(isPaused() ? "已暂停" : "运行中")} · 识别到 {colony.Walls.Count} 个窗口墙 · {colony.Foods.Count} 处食物 · 工蚁在底层沿窗口墙绕行" + (!colony.NestExitOpen ? " · 巢口被遮住，巢内工蚁暂缓出巢" : colony.FoodSpaceAvailable ? "" : " · 暂无可达桌面空地，等待窗口布局改变");
         pause.Content = isPaused() ? "继续" : "暂停"; RefreshDetail(); nestView.RefreshScene();
     }
 }

@@ -9,6 +9,63 @@ void Conserved(DesktopColony c)
     Check(c.Delivered + c.Carrying + c.Remaining + c.Expired == c.Spawned, "Food is not conserved");
     Check(c.Stored + c.Consumed == 12 + c.Delivered, "Nest resources are not conserved");
 }
+Test("Covering the nest does not turn exposed explorers into covered workers", () => {
+    var c = new DesktopColony(1000, 700, 48);
+    foreach (var ant in c.Workers) { ant.Position = new Vec(120 + ant.Id % 12 * 60, 150 + ant.Id / 12 * 70); ant.State = AntState.Searching; ant.Heading = -Math.PI / 2; ant.Energy = 100; }
+    var original = c.Workers.Select(a => a.Position).ToArray();
+    c.UpdateWalls([new Wall(1, 380, 550, 240, 150)]);
+    Check(c.Workers.All(a => a.State == AntState.Searching), "Closing only the nest marked all exposed workers as covered");
+    Check(c.Workers.Select(a => a.Position).SequenceEqual(original), "Closing the nest moved workers");
+    c.Step(5);
+    Check(c.Workers.All(a => a.State == AntState.Searching && a.Position.Y < 530 && !c.IsNestApron(a.Position)), "Explorers collectively rushed to the blocked nest");
+    Check(c.Workers.Any(a => (a.Position - original[a.Id]).Length > 30), "Exposed workers stopped exploring when the nest was blocked");
+});
+Test("A sealed nest suspends departures and preserves outside food and paths", () => {
+    var c = new DesktopColony(1000, 700, 24); c.SpawnFood();
+    int food = c.Remaining; var point = c.Foods[0].Position;
+    int cell = c.Navigation.Index(new Vec(150, 150)); c.Pheromones[cell] = 4;
+    var timers = c.Workers.Select(a => a.Timer).ToArray();
+    c.UpdateWalls([new Wall(1, 380, 550, 240, 150)]);
+    Check(c.Remaining == food && c.Foods[0].Position == point && c.Pheromones[cell] == 4, "Blocking the nest erased open-floor food or scent");
+    c.Step(15);
+    Check(c.Workers.All(a => a.State == AntState.InNest && a.Position == c.Home), "Workers repeatedly emerged into a sealed nest apron");
+    Check(c.Workers.Select(a => a.Timer).SequenceEqual(timers), "Blocked departures all ran down to zero");
+    var saved = c.Snapshot(); var restored = DesktopColony.Restore(saved, 1000, 700); restored.UpdateWalls(c.Walls); restored.Step(5);
+    Check(restored.Workers.All(a => a.State == AntState.InNest) && restored.Remaining == food, "Restarting a sealed nest lost its suspended departure state");
+    c.UpdateWalls([]); c.Step(.1);
+    Check(c.Workers.All(a => a.State == AntState.InNest), "Unblocking released the whole colony at once");
+    c.Step(12); Check(c.Workers.Any(a => a.State == AntState.Searching && !c.IsNestApron(a.Position)), "Unblocked workers did not resume staggered departures");
+});
+Test("Actually covered workers escape to open floor instead of an isolated nest apron", () => {
+    var c = new DesktopColony(1000, 700, 1); var ant = c.Workers[0];
+    ant.State = AntState.Searching; ant.Position = new Vec(420, 590); ant.Energy = 100;
+    c.UpdateWalls([new Wall(1, 380, 550, 240, 150)]);
+    Check(ant.State == AntState.UnderWindow, "An actually covered ant was not hidden");
+    for (int i = 0; i < 100 && ant.State == AntState.UnderWindow; i++) {
+        var previous = ant.Position; c.Step(.1);
+        Check((ant.Position - previous).Length <= 4.800001 && !c.IsNestApron(ant.Position), "Escape jumped or entered the isolated nest apron");
+    }
+    Check(ant.State == AntState.Searching && c.CanWalk(ant.Position), "Covered worker failed to resume exploration on open floor");
+});
+Test("A hidden taskbar route is not an open nest exit", () => {
+    var c = new DesktopColony(1000, 740, 12);
+    c.FoodAreas = [new Wall(0, 0, 0, 1000, 700)];
+    c.ConfigureScreens(1000, 740, [new Wall(0, 0, 0, 1000, 740)], new Vec(500, 676));
+    c.UpdateWalls([new Wall(1, 0, 550, 1000, 136)]);
+    Check(!c.NestExitOpen, "A path underneath the taskbar enabled departures from a covered nest");
+    c.Step(15); Check(c.Workers.All(a => a.State == AntState.InNest), "Workers emerged below the taskbar from a covered nest");
+    c.UpdateWalls([]); Check(c.NestExitOpen, "Removing the covering window did not reopen the nest");
+});
+Test("A carrier waits on exposed floor while the nest is sealed and returns after reopening", () => {
+    var c = new DesktopColony(1000, 700, 1); c.SpawnFood(); var ant = c.Workers[0];
+    ant.Position = c.Foods[0].Position; ant.State = AntState.Searching; ant.Energy = 100; c.Step(.01);
+    Check(ant.HasFood, "Test worker did not pick up food");
+    ant.Position = new Vec(150, 250); c.UpdateWalls([new Wall(1, 380, 550, 240, 150)]);
+    c.Step(10);
+    Check(ant.State == AntState.Returning && ant.HasFood && c.Delivered == 0 && !c.IsNestApron(ant.Position), "A carrier entered the blocked apron or delivered through a window"); Conserved(c);
+    c.UpdateWalls([]); c.Step(40);
+    Check(c.Delivered >= 1 && !ant.HasFood, "Reopening did not restore actual delivery"); Conserved(c);
+});
 Test("Food appears only on reachable, window-free desktop", () => {
     var c = new DesktopColony(1000, 700); c.UpdateWalls([new Wall(1, 280, 150, 400, 380)]);
     for (int i = 0; i < 30; i++) c.SpawnFood();

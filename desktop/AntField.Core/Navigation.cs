@@ -79,7 +79,7 @@ public sealed class Navigation
             if (HomeDistance[next] >= 0 && HomeDistance[next] < HomeDistance[best] && Clear(p, Center(next))) best = next;
         return Center(best);
     }
-    public Vec? Detour(Vec p, double heading, int id)
+    public Vec? Detour(Vec p, double heading, int id, Func<Vec, bool>? allowed = null)
     {
         Vec? best = null; double bestScore = double.MinValue;
         int left = Math.Max(0, (int)((p.X - 95) / Cell)), right = Math.Min(Columns - 1, (int)((p.X + 95) / Cell));
@@ -87,9 +87,9 @@ public sealed class Navigation
         for (int y = top; y <= bottom; y++) for (int x = left; x <= right; x++)
         {
             int index = y * Columns + x;
-            if (HomeDistance[index] < 0) continue;
+            if (!Floor[index]) continue;
             var target = Center(index); var delta = target - p;
-            if (delta.Length < 55 || delta.Length > 95 || !Clear(p, target)) continue;
+            if (delta.Length < 55 || delta.Length > 95 || (allowed != null && !allowed(target)) || !Clear(p, target)) continue;
             // Prefer open space; a small individual bias prevents the whole colony
             // from choosing the same wall-following direction at a shared corner.
             int exits = Neighbors(index).Count(next => Floor[next]);
@@ -99,10 +99,10 @@ public sealed class Navigation
         return best;
     }
 
-    public Vec? Nearest(Vec p, Func<Vec, bool> free)
+    public Vec? Nearest(Vec p, Func<Vec, bool> free, bool homeConnectedOnly = true)
     {
         double bestDistance = double.MaxValue; Vec? best = null;
-        for (int i = 0; i < Floor.Length; i++) if (HomeDistance[i] >= 0)
+        for (int i = 0; i < Floor.Length; i++) if (Floor[i] && (!homeConnectedOnly || HomeDistance[i] >= 0))
         {
             var point = Center(i); double d = (point - p).Length;
             if (d < bestDistance && free(point)) { bestDistance = d; best = point; }

@@ -75,7 +75,7 @@ public sealed class DesktopColony
         if (saved.Pheromones is { } trail && width == saved.Width && height == saved.Height && trail.Length == colony.Pheromones.Length)
         {
             if (trail.Any(v => !float.IsFinite(v) || v < 0)) throw new ArgumentException("无效的气味路径。");
-            for (int i = 0; i < trail.Length; i++) if (colony.Navigation.HomeDistance[i] >= 0) colony.Pheromones[i] = Math.Min(24, trail[i]);
+            for (int i = 0; i < trail.Length; i++) if (colony.Navigation.Floor[i]) colony.Pheromones[i] = Math.Min(24, trail[i]);
         }
         colony.ResolveChanges(); return colony;
     }
@@ -89,8 +89,12 @@ public sealed class DesktopColony
     void AddWorker() => Workers.Add(new Worker { Id = workerId++, Position = Home, Heading = -Math.PI * random.NextDouble(), Timer = 1 + random.NextDouble() * 8 });
     public bool IsNestApron(Vec p) => Math.Abs(p.X - Home.X) < 48 && p.Y > Home.Y - 24 && p.Y < Home.Y + 24;
     public bool Free(Vec p) => p.X >= 7 && p.X < Width - 7 && p.Y >= 7 && p.Y < Height - 7 && OnScreen(p) && (IsNestApron(p) || !Walls.Any(w => w.Contains(p, 7)));
-    public bool CanWalk(Vec p) => Free(p) && Navigation.Reachable(p);
-    bool FoodSpace(Vec p, double margin = 14) => (FoodAreas.Count == 0 || FoodAreas.Any(s => s.Contains(p, -margin))) && CanWalk(p) && (p - Home).Length > 100 && !Walls.Any(w => w.Contains(p, margin)) && p.X >= margin && p.Y >= margin && p.X < Width - margin && p.Y < Height - margin;
+    // Physical floor access and a route home are independent. A closed nest
+    // must not classify every worker outside it as being under a window.
+    public bool CanWalk(Vec p) => Free(p);
+    public bool NestExitOpen { get; private set; } = true;
+    bool VisibleFloor(Vec p) => FoodAreas.Count == 0 || FoodAreas.Any(s => s.Contains(p, -7));
+    bool FoodSpace(Vec p, double margin = 14) => (FoodAreas.Count == 0 || FoodAreas.Any(s => s.Contains(p, -margin))) && CanWalk(p) && (!NestExitOpen || Navigation.Reachable(p)) && (p - Home).Length > 100 && !Walls.Any(w => w.Contains(p, margin)) && p.X >= margin && p.Y >= margin && p.X < Width - margin && p.Y < Height - margin;
     bool GroundClear(Vec a, Vec b)
     {
         if (!Free(a) || !Free(b)) return false;
@@ -114,8 +118,14 @@ public sealed class DesktopColony
     void Rebuild()
     {
         Navigation.Rebuild(Width, Height, Home, Free, GroundClear);
+        // Probe a real exit onto visible desktop, not a path through the hidden
+        // taskbar strip below a window. The reserved nest apron is not an exit.
+        NestExitOpen = Enumerable.Range(0, 32).Any(i => {
+            var exit = Home + Vec.Direction(i * Math.PI / 16) * 60;
+            return !IsNestApron(exit) && VisibleFloor(exit) && Free(exit) && GroundClear(Home, exit);
+        });
         if (Pheromones.Length != Navigation.Floor.Length) Pheromones = new float[Navigation.Floor.Length];
-        for (int i = 0; i < Pheromones.Length; i++) if (Navigation.HomeDistance[i] < 0) Pheromones[i] = 0;
+        for (int i = 0; i < Pheromones.Length; i++) if (!Navigation.Floor[i]) Pheromones[i] = 0;
     }
     public void Resize(double width, double height)
     {
@@ -148,6 +158,7 @@ public sealed class DesktopColony
     }
     public bool SpawnFood()
     {
+        if (!NestExitOpen) { FoodSpaceAvailable = false; return false; }
         if (Foods.Count >= 9) return false;
         bool large = !Foods.Any(f => f.IsLarge) && random.NextDouble() < .2;
         var candidates = Enumerable.Range(0, Navigation.Floor.Length).Where(i => FoodSpace(Navigation.Center(i), large ? 30 : 14)).ToArray();
@@ -173,6 +184,14 @@ public sealed class DesktopColony
     double Scent(Vec p) { int i = Navigation.Index(p); return i >= 0 && CanWalk(p) ? Pheromones[i] : 0; }
     Vec ReturnDirection(Worker ant)
     {
+        if (!NestExitOpen || !Navigation.Reachable(ant.Position))
+        {
+            // Keep the carried food and wait/move locally on this floor.
+            // Never escape through a window toward a remote home component.
+            if (ant.ReturnTarget is Vec waiting && (waiting - ant.Position).Length > 3 && CanWalk(waiting) && VisibleFloor(waiting) && !IsNestApron(waiting) && Navigation.Clear(ant.Position, waiting)) return waiting;
+            ant.ReturnTarget = Navigation.Detour(ant.Position, ant.Heading, ant.Id, p => VisibleFloor(p) && !IsNestApron(p)) ?? ant.Position;
+            return ant.ReturnTarget.Value;
+        }
         // Keep a local waypoint until reached; selecting afresh every frame causes zigzags.
         if (ant.ReturnTarget is Vec previous && (previous - ant.Position).Length > 3 && CanWalk(previous) && Navigation.Clear(ant.Position, previous)) return previous;
         int current = Navigation.Index(ant.Position);
@@ -212,7 +231,7 @@ public sealed class DesktopColony
         bool nearWall = Walls.Any(w => w.Contains(ant.Position, 30)) || ant.Position.X < 25 || ant.Position.X > Width - 25 || ant.Position.Y < 25 || ant.Position.Y > Height - 25;
         if (nearWall && (ant.Position - origin).Length < 18 && ant.DetourTarget == null && Time >= ant.DetourUntil)
         {
-            ant.DetourTarget = Navigation.Detour(ant.Position, ant.Heading, ant.Id);
+            ant.DetourTarget = Navigation.Detour(ant.Position, ant.Heading, ant.Id, p => VisibleFloor(p) && (NestExitOpen || !IsNestApron(p)));
             if (ant.DetourTarget != null) { ant.DetourUntil = Time + 3; ant.ReturnTarget = null; ant.Turn = 0; }
         }
         ant.ProgressOrigin = ant.Position; ant.ProgressTime = Time;
@@ -255,8 +274,8 @@ public sealed class DesktopColony
             if (ant.State == AntState.InNest)
             {
                 ant.ProgressOrigin = null; ant.DetourTarget = null;
-                ant.Position = Home; ant.Timer -= dt; ant.Energy = Math.Min(100, ant.Energy + dt * 18);
-                if (ant.Timer <= 0 && ant.Energy > 60)
+                ant.Position = Home; if (NestExitOpen) ant.Timer -= dt; ant.Energy = Math.Min(100, ant.Energy + dt * 18);
+                if (NestExitOpen && ant.Timer <= 0 && ant.Energy > 60)
                 {
                     ant.State = AntState.Searching;
                     var source = Foods.FirstOrDefault(f => f.Id == ant.FoodSourceId && f.Amount > 0);
@@ -300,7 +319,7 @@ public sealed class DesktopColony
             }
             if (ant.State == AntState.Returning)
             {
-                if ((ant.Position - Home).Length < 27)
+                if (NestExitOpen && (ant.Position - Home).Length < 27)
                 {
                     if (ant.HasFood) { Delivered++; Stored++; ant.HasFood = false; }
                     if (ant.Energy < 50 && Stored > 0) { Stored--; Consumed++; }
@@ -358,7 +377,7 @@ public sealed class DesktopColony
         if (ant.Decision <= 0 || ant.EscapeTarget == null)
         {
             // The target guides locomotion under the window; it is not assigned as a position.
-            ant.EscapeTarget = Navigation.Nearest(ant.Position, Free);
+            ant.EscapeTarget = Navigation.Nearest(ant.Position, p => Free(p) && VisibleFloor(p) && (NestExitOpen || !IsNestApron(p)), false);
             ant.Decision = .35;
         }
         if (ant.EscapeTarget is not Vec target) return;
